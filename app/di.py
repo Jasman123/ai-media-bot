@@ -18,6 +18,7 @@ from .bot import build_router
 from .bot.dispatcher import BotConfig, Dispatcher
 from .bot.router import Router
 from .config import Settings, get_settings
+from .domain.billing import LedgerRepository
 from .domain.catalog import CatalogRepository, CatalogSeed, PricingPolicy
 from .domain.generation import MediaProvider
 from .domain.ports import Clock, TaskQueue, UnitOfWork, UpdateDeduper, WizardState
@@ -29,10 +30,12 @@ from .infra.db import SqlUnitOfWork, make_engine, make_sessionmaker
 from .infra.providers.fake import FakeProvider
 from .infra.queue import ArqTaskQueue, create_redis
 from .infra.repositories.catalog import SqlCatalogRepository
+from .infra.repositories.ledger import SqlLedgerRepository
 from .infra.repositories.users import SqlUserRepository
 from .infra.state import RedisUpdateDeduper, RedisWizardState
 from .infra.telegram import TelegramClient
 from .services.catalog import CatalogService
+from .services.ledger import LedgerService
 from .services.providers import ProviderRegistry
 from .services.updates import UpdateIntake
 from .services.users import UserService
@@ -123,11 +126,13 @@ class RepositoryProvider(Provider):
 
     users = provide(SqlUserRepository, provides=UserRepository)
     catalog = provide(SqlCatalogRepository, provides=CatalogRepository)
+    ledger = provide(SqlLedgerRepository, provides=LedgerRepository)
 
 
 class ServiceProvider(Provider):
     users = provide(UserService, scope=Scope.REQUEST)
     catalog = provide(CatalogService, scope=Scope.REQUEST)
+    ledger = provide(LedgerService, scope=Scope.REQUEST)
     update_intake = provide(UpdateIntake, scope=Scope.APP)
 
 

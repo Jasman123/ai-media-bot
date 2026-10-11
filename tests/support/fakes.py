@@ -163,3 +163,73 @@ class InMemoryCatalogRepository:
                 self.models[model_id] = replace(model, enabled=enabled)
                 changed += 1
         return changed
+
+
+class InMemoryLedgerRepository:
+    """Mirrors SqlLedgerRepository semantics (idempotency keys, FIFO-expiry query, reservations)."""
+
+    def __init__(self) -> None:
+        from app.domain.billing import NewEntry  # noqa: F401  (documented type of self.entries)
+
+        self.entries: list[tuple[int, Any]] = []      # (id, NewEntry)
+        self.reservations: dict[str, Any] = {}
+        self.locks: list[int] = []
+        self._ids = itertools.count(1)
+        self.now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+
+    async def lock_account(self, user_id: int) -> None:
+        self.locks.append(user_id)
+
+    async def balance(self, user_id: int):
+        from app.domain.billing import Balance, Bucket
+
+        free = sum(e.amount for _, e in self.entries if e.user_id == user_id and e.bucket == Bucket.FREE)
+        paid = sum(e.amount for _, e in self.entries if e.user_id == user_id and e.bucket == Bucket.PAID)
+        return Balance(free=free, paid=paid)
+
+    async def append(self, entries) -> int:
+        inserted = 0
+        for entry in entries:
+            if entry.idempotency_key and await self.has_key(entry.idempotency_key):
+                continue
+            self.entries.append((next(self._ids), entry))
+            inserted += 1
+        return inserted
+
+    async def has_key(self, idempotency_key: str) -> bool:
+        return any(e.idempotency_key == idempotency_key for _, e in self.entries)
+
+    async def unexpired_free_grants(self, user_id: int, now: datetime) -> int:
+        from app.domain.billing import Bucket, EntryKind
+
+        return sum(e.amount for _, e in self.entries
+                   if e.user_id == user_id and e.bucket == Bucket.FREE and e.amount > 0
+                   and e.kind != EntryKind.RELEASE and (e.expires_at is None or e.expires_at > now))
+
+    async def next_free_expiry(self, user_id: int, now: datetime):
+        from app.domain.billing import Bucket
+
+        dates = [e.expires_at for _, e in self.entries if e.user_id == user_id and e.bucket == Bucket.FREE
+                 and e.amount > 0 and e.expires_at and e.expires_at > now]
+        return min(dates) if dates else None
+
+    async def accounts_with_free_credits(self) -> list[int]:
+        users = sorted({e.user_id for _, e in self.entries})
+        return [u for u in users if (await self.balance(u)).free > 0]
+
+    async def create_reservation(self, reservation) -> None:
+        self.reservations[reservation.id] = reservation
+
+    async def get_reservation(self, reservation_id: str, for_update: bool = False):
+        return self.reservations.get(reservation_id)
+
+    async def set_reservation_status(self, reservation_id, status, at) -> None:
+        self.reservations[reservation_id] = replace(self.reservations[reservation_id], status=status)
+
+    async def history(self, user_id: int, limit: int = 20):
+        from app.domain.billing import LedgerEntry
+
+        rows = [(i, e) for i, e in self.entries if e.user_id == user_id and e.amount != 0][::-1][:limit]
+        return [LedgerEntry(id=i, user_id=e.user_id, bucket=e.bucket, amount=e.amount, kind=e.kind,
+                            created_at=self.now, reservation_id=e.reservation_id, job_id=e.job_id,
+                            expires_at=e.expires_at, note=e.note) for i, e in rows]

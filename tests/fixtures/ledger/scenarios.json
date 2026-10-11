@@ -1,0 +1,68 @@
+{
+  "_doc": "Table-driven ledger scenarios. Each step: op + args; 'expect' checks {free, paid} after the step; 'error' names an expected exception. Days are offsets from 2026-10-11T00:00Z.",
+  "scenarios": [
+    {
+      "name": "free credits are spent first on images",
+      "steps": [
+        {"op": "grant", "bucket": "free", "amount": 20, "kind": "signup_gift", "expires_in_days": 14, "expect": {"free": 20, "paid": 0}},
+        {"op": "grant", "bucket": "paid", "amount": 50, "kind": "purchase", "expect": {"free": 20, "paid": 50}},
+        {"op": "reserve", "amount": 25, "kind": "image", "as": "r1", "expect": {"free": 0, "paid": 45}},
+        {"op": "capture", "ref": "r1", "expect": {"free": 0, "paid": 45}}
+      ]
+    },
+    {
+      "name": "video never touches free credits",
+      "steps": [
+        {"op": "grant", "bucket": "free", "amount": 20, "kind": "signup_gift", "expires_in_days": 14},
+        {"op": "reserve", "amount": 35, "kind": "video", "error": "InsufficientCredits", "expect": {"free": 20, "paid": 0}},
+        {"op": "grant", "bucket": "paid", "amount": 50, "kind": "purchase"},
+        {"op": "reserve", "amount": 35, "kind": "video", "as": "v", "expect": {"free": 20, "paid": 15}}
+      ]
+    },
+    {
+      "name": "failed job releases everything back to the right buckets",
+      "steps": [
+        {"op": "grant", "bucket": "free", "amount": 10, "kind": "signup_gift", "expires_in_days": 14},
+        {"op": "grant", "bucket": "paid", "amount": 10, "kind": "purchase"},
+        {"op": "reserve", "amount": 15, "kind": "image", "as": "r", "expect": {"free": 0, "paid": 5}},
+        {"op": "release", "ref": "r", "expect": {"free": 10, "paid": 10}},
+        {"op": "release", "ref": "r", "expect": {"free": 10, "paid": 10}},
+        {"op": "capture", "ref": "r", "error": "ReservationConflict", "expect": {"free": 10, "paid": 10}}
+      ]
+    },
+    {
+      "name": "free credits expire FIFO across grants",
+      "steps": [
+        {"op": "grant", "bucket": "free", "amount": 20, "kind": "signup_gift", "expires_in_days": 14},
+        {"op": "advance_days", "days": 10},
+        {"op": "grant", "bucket": "free", "amount": 5, "kind": "referral_bonus", "expires_in_days": 14},
+        {"op": "reserve", "amount": 3, "kind": "image", "as": "r", "expect": {"free": 22, "paid": 0}},
+        {"op": "capture", "ref": "r"},
+        {"op": "advance_days", "days": 5},
+        {"op": "expire", "expect": {"free": 5, "paid": 0}},
+        {"op": "expire", "expect": {"free": 5, "paid": 0}},
+        {"op": "advance_days", "days": 10},
+        {"op": "expire", "expect": {"free": 0, "paid": 0}}
+      ]
+    },
+    {
+      "name": "expired free credits cannot be reserved",
+      "steps": [
+        {"op": "grant", "bucket": "free", "amount": 20, "kind": "signup_gift", "expires_in_days": 14},
+        {"op": "advance_days", "days": 15},
+        {"op": "reserve", "amount": 2, "kind": "image", "error": "InsufficientCredits", "expect": {"free": 0, "paid": 0}}
+      ]
+    },
+    {
+      "name": "idempotent purchase grant and clamped refund debit",
+      "steps": [
+        {"op": "grant", "bucket": "paid", "amount": 165, "kind": "purchase", "key": "pay:charge-1", "expect": {"free": 0, "paid": 165}},
+        {"op": "grant", "bucket": "paid", "amount": 165, "kind": "purchase", "key": "pay:charge-1", "expect": {"free": 0, "paid": 165}},
+        {"op": "reserve", "amount": 100, "kind": "video", "as": "v"},
+        {"op": "capture", "ref": "v", "expect": {"free": 0, "paid": 65}},
+        {"op": "debit", "bucket": "paid", "amount": 165, "kind": "stars_refund", "key": "refund:charge-1", "taken": 65, "expect": {"free": 0, "paid": 0}},
+        {"op": "debit", "bucket": "paid", "amount": 165, "kind": "stars_refund", "key": "refund:charge-1", "taken": 0, "expect": {"free": 0, "paid": 0}}
+      ]
+    }
+  ]
+}
