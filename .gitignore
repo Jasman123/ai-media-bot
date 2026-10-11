@@ -7,3 +7,13 @@ venv/
 dist/
 build/
 *.log
+
+# Local tooling binaries (C8)
+*.deb
+
+# Test / tooling artefacts
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+media/
