@@ -46,7 +46,7 @@ Rules of thumb:
 | Scope | Lifetime | Provides |
 |---|---|---|
 | `APP` | process | `Settings`, `AsyncEngine`, `async_sessionmaker`, `ArqRedis`, `TelegramClient`, `I18n`, `Clock`, `TaskQueue`, `WizardState`, `UpdateDeduper`, `UpdateIntake`, `ProviderRegistry` (+ adapters), `PricingPolicy`, `CatalogSeed`, `Router`, `BotConfig` |
-| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `CatalogService`, `Dispatcher` |
+| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `CatalogService`, `LedgerService`, `Dispatcher` |
 
 - **Bot handlers** declare dependencies as typed parameters; the `Dispatcher` resolves them from the job's REQUEST
   container. All objects in one update share one DB session:
@@ -121,7 +121,8 @@ Banned users: callbacks get an alert, private messages get `errors.banned`, noth
 
 ### Commands
 
-`/start` (language picker on first use, then menu), `/menu`, `/help` (`/bantuan`), `/settings`
+`/start` (language picker on first use, then menu), `/menu`, `/saldo` (`/kredit`, `/balance`, `/credits`),
+`/help` (`/bantuan`), `/settings`
 (`/pengaturan`), `/language` (`/bahasa`), `/cancel` (`/batal`). `setMyCommands` runs per language at startup
 when the webhook is registered.
 
@@ -153,6 +154,27 @@ when the webhook is registered.
 - **Resolution** (`CatalogService`): `tiers(op)` = primary (lowest priority) usable model per tier, cheapest tier
   first; usable = enabled + provider registered + supports op. `chain(model_id, op)` follows `fallback_id`,
   skipping unusable rows, cycle-safe.
+
+### 3.2 Credit ledger (M1)
+
+| Table | Columns | Notes |
+|---|---|---|
+| `ledger_entries` | `id`, `user_id`, `bucket` (`free`/`paid`), `amount` (±), `kind`, `reservation_id?`, `job_id?`, `payment_id?`, `expires_at?`, `note?`, `idempotency_key?` (unique), `created_at` | **Append-only**: a Postgres trigger rejects `UPDATE`/`DELETE` |
+| `credit_reservations` | `id` (uuid), `user_id`, `free_amount`, `paid_amount`, `status` (`held`/`captured`/`released`), `job_id?`, `created_at`, `settled_at?` | |
+
+- **Balance** = `SUM(amount)` per bucket. Entry kinds: `signup_gift, purchase, subscription, reserve, capture,
+  release, admin_grant, admin_revoke, referral_bonus, referral_reward, expiry, stars_refund, transfer_in/out`.
+- **Reserve**: lock the account row (`SELECT … FOR UPDATE` on `users`), apply due expiry, split the amount
+  (free first, free only if the job is an image — D5), write the reservation + negative `reserve` rows. Concurrent
+  reserves serialise on the lock, so the balance can't go negative.
+- **Capture** (job delivered) writes zero-amount `capture` audit rows; **release** (failure/timeout/moderation)
+  writes positive `release` rows. Both are idempotent; capture-after-release raises `ReservationConflict`.
+- **Grant** with an `idempotency_key` is credited at most once (used for `pay:<telegram_payment_charge_id>`).
+  Paid credits can't carry an expiry.
+- **Debit** (admin revoke, Stars refund) is clamped at the bucket balance and returns the amount actually taken.
+- **Free expiry (FIFO)**: expired = `max(0, free_balance − Σ unexpired free grants)` (release rows don't count as
+  grants). Applied lazily on reserve/summary and by the daily cron `expire_free_credits` (17:05 UTC = 00:05 WIB).
+- Services accept `commit=False` so a caller can compose a ledger change with its own writes in one transaction.
 
 ## 4. Provider adapters (A1, A3)
 
