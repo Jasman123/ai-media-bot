@@ -1,0 +1,14 @@
+{
+  "update_id": 870003,
+  "message": {
+    "message_id": 13,
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "language_code": "id"},
+    "chat": {"id": 7001001, "first_name": "Sari", "type": "private"},
+    "date": 1791700020,
+    "photo": [
+      {"file_id": "AgACAgQAAxkBAAIBsmall", "file_unique_id": "AQADs", "file_size": 1200, "width": 90, "height": 90},
+      {"file_id": "AgACAgQAAxkBAAIBlarge", "file_unique_id": "AQADl", "file_size": 98000, "width": 1280, "height": 1280}
+    ],
+    "caption": "animasikan"
+  }
+}

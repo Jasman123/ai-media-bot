@@ -1,0 +1,16 @@
+{
+  "update_id": 870004,
+  "callback_query": {
+    "id": "4382bfdwdsb323b2d9",
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "language_code": "id"},
+    "message": {
+      "message_id": 14,
+      "from": {"id": 999000, "is_bot": true, "first_name": "Test", "username": "test_media_bot"},
+      "chat": {"id": 7001001, "first_name": "Sari", "type": "private"},
+      "date": 1791700030,
+      "text": "Menu"
+    },
+    "chat_instance": "-8812734",
+    "data": "m:img"
+  }
+}

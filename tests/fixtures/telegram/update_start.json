@@ -1,0 +1,11 @@
+{
+  "update_id": 870001,
+  "message": {
+    "message_id": 11,
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "username": "sari_umkm", "language_code": "id"},
+    "chat": {"id": 7001001, "first_name": "Sari", "username": "sari_umkm", "type": "private"},
+    "date": 1791700000,
+    "text": "/start",
+    "entities": [{"offset": 0, "length": 6, "type": "bot_command"}]
+  }
+}
