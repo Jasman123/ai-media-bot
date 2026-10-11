@@ -5,8 +5,8 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.infra.telegram import ALLOWED_UPDATES, InputFile, TelegramClient, TelegramError, _clean
 from app.logging_setup import JsonFormatter, RedactingFormatter, configure_logging, redact
-from app.telegram import ALLOWED_UPDATES, InputFile, TelegramClient, TelegramError, _clean
 from tests.conftest import make_settings
 from tests.support.fake_telegram import TEST_TOKEN
 

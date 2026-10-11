@@ -6,13 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ..db import Base
 
 
-class User(Base):
-    """A Telegram account (kind='user') or a group chat holding a shared credit pool (kind='group').
-
-    PDP minimisation: we keep the Telegram id, an optional username for support, and the language. No names,
-    no phone numbers.
-    """
-
+class UserRow(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

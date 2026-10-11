@@ -10,8 +10,8 @@ from typing import Any
 
 import yaml
 
-DEFAULT_LANG = "id"
-SUPPORTED = ("id", "en")
+from ..domain.users import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
+
 _DIR = Path(__file__).parent
 
 
@@ -31,14 +31,14 @@ def placeholders(template: str) -> set[str]:
 
 
 class I18n:
-    def __init__(self, catalogs: dict[str, dict[str, str]], default: str = DEFAULT_LANG):
+    def __init__(self, catalogs: dict[str, dict[str, str]], default: str = DEFAULT_LANGUAGE):
         self.catalogs = catalogs
         self.default = default
 
     @classmethod
     def load(cls, directory: Path = _DIR) -> "I18n":
         catalogs = {}
-        for lang in SUPPORTED:
+        for lang in SUPPORTED_LANGUAGES:
             with open(directory / f"{lang}.yaml", encoding="utf-8") as fh:
                 catalogs[lang] = _flatten(yaml.safe_load(fh) or {})
         return cls(catalogs)

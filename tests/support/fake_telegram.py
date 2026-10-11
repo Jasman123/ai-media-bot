@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from app.telegram import TelegramClient
+from app.infra.telegram import TelegramClient
 
 TEST_TOKEN = "123456789:TEST_TOKEN_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BOT_ID = 999000

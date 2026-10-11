@@ -6,13 +6,16 @@
     assert "Mau buat apa" in user.last_text()
 """
 
+import contextlib
 import itertools
-from collections.abc import Callable
 
 import httpx
+from arq.connections import ArqRedis
+from dishka import AsyncContainer
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.container import Container
-from app.queue import ALL_QUEUES
+from app.domain.tasks import ALL_QUEUES
+from app.infra.db import make_sessionmaker
 from app.worker import FUNCTIONS, create_worker
 from tests.conftest import WEBHOOK_SECRET
 from tests.support import updates
@@ -20,11 +23,20 @@ from tests.support.fake_telegram import FakeTelegram
 
 
 class Stack:
-    def __init__(self, container: Container, tg: FakeTelegram, http: httpx.AsyncClient):
-        self.container = container
+    def __init__(self, di: AsyncContainer, tg: FakeTelegram, http: httpx.AsyncClient, redis: ArqRedis,
+                 engine: AsyncEngine):
+        self.di = di
         self.tg = tg
         self.http = http
+        self.redis = redis
+        self.sessionmaker = make_sessionmaker(engine)
         self._msg_ids = itertools.count(10_000)
+
+    @contextlib.asynccontextmanager
+    async def scope(self):
+        """A REQUEST scope, like one webhook call or one worker job: `async with stack.scope() as r: await r.get(T)`."""
+        async with self.di() as request_container:
+            yield request_container
 
     async def post_update(self, update: dict, secret: str = WEBHOOK_SECRET) -> httpx.Response:
         return await self.http.post("/webhook/telegram", json=update,
@@ -38,10 +50,10 @@ class Stack:
             for queue in ALL_QUEUES:
                 if not FUNCTIONS[queue]:
                     continue
-                if await self.container.redis.zcard(queue) == 0:
+                if await self.redis.zcard(queue) == 0:
                     continue
                 pending += 1
-                worker = create_worker(self.container, queue, burst=True, poll_delay=0.01)
+                worker = create_worker(self.di, self.redis, queue, burst=True, poll_delay=0.01)
                 done += await worker.run_check()
             if pending == 0:
                 return done
@@ -55,10 +67,6 @@ class Stack:
 
     def user(self, telegram_id: int, lang: str = "id") -> "BotUser":
         return BotUser(self, telegram_id, lang)
-
-    async def run_task(self, fn: Callable, *args):
-        """Call a worker task function directly with the worker ctx."""
-        return await fn({"container": self.container, "job_try": 1}, *args)
 
 
 class BotUser:
