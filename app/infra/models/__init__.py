@@ -6,6 +6,7 @@ Rows never leave app.infra: repositories map them to domain entities.
 from ..db import Base
 from .billing import LedgerEntryRow, ReservationRow
 from .catalog import CatalogRow
+from .jobs import JobRow
 from .users import UserRow
 
-__all__ = ["Base", "CatalogRow", "LedgerEntryRow", "ReservationRow", "UserRow"]
+__all__ = ["Base", "CatalogRow", "JobRow", "LedgerEntryRow", "ReservationRow", "UserRow"]

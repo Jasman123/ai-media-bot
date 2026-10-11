@@ -1,0 +1,13 @@
+{
+  "_doc": "How each provider outcome maps to job status, failure reason, refund and user notice (plan §6.1 error taxonomy, F11). 'mode' is the FakeProvider mode; 'catalog' optionally rewires models first.",
+  "cases": [
+    {"name": "success",               "mode": "instant",    "status": "delivered", "reason": null,             "refunded": false, "notified": false},
+    {"name": "async success",         "mode": "delayed",    "status": "delivered", "reason": null,             "refunded": false, "notified": false},
+    {"name": "provider failure",      "mode": "fail",       "status": "refunded",  "reason": "provider_error", "refunded": true,  "notified": true},
+    {"name": "moderation block",      "mode": "moderation", "status": "refunded",  "reason": "moderation",     "refunded": true,  "notified": true},
+    {"name": "invalid input",         "mode": "invalid",    "status": "refunded",  "reason": "invalid_input",  "refunded": true,  "notified": true},
+    {"name": "provider down",         "mode": "down",       "status": "refunded",  "reason": "provider_down",  "refunded": true,  "notified": true},
+    {"name": "quota exhausted",       "mode": "quota",      "status": "refunded",  "reason": "provider_down",  "refunded": true,  "notified": true, "paused": true},
+    {"name": "transient then success","mode": "retry",      "status": "delivered", "reason": null,             "refunded": false, "notified": false}
+  ]
+}

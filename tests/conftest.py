@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,7 @@ TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://ai
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:56379/0")
 WEBHOOK_SECRET = "test-webhook-secret"
 API_KEY = "test-api-key"
+TEST_MEDIA_DIR = tempfile.mkdtemp(prefix="aimb-media-")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -42,6 +44,10 @@ def make_settings(**overrides) -> Settings:
         redis_url=TEST_REDIS_URL,
         enable_fake_provider=True,
         fake_provider_delay_polls=2,
+        job_image_poll_s=0.01,
+        job_video_poll_s=0.01,
+        storage_dir=TEST_MEDIA_DIR,
+        public_base_url="http://test",
     )
     base.update(overrides)
     return Settings(**base)

@@ -74,7 +74,8 @@ class TelegramClient:
     async def call_multipart(self, method: str, files: dict[str, InputFile], **params: Any) -> Any:
         data = {}
         for key, value in _clean(params).items():
-            data[key] = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+            # JSON encoding gives Telegram "true"/"false" for booleans (str() would send "True").
+            data[key] = json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value)
         upload = {name: (f.filename, f.content, f.mime_type) for name, f in files.items()}
         try:
             resp = await self._http.post(f"{self._base}/{method}", data=data, files=upload)
@@ -185,6 +186,20 @@ class TelegramClient:
         return await self._send_media("sendDocument", "document", chat_id, document, caption=caption,
                                       parse_mode="HTML" if caption else None, reply_markup=reply_markup,
                                       disable_notification=disable_notification)
+
+    async def send_media_group(self, chat_id: int, items: list[tuple[str, InputFile]],
+                               caption: str | None = None, disable_notification: bool | None = None) -> list[dict]:
+        """items: (type, file) with type "photo" or "video"; 2-10 items. Caption goes on the first item."""
+        media, files = [], {}
+        for index, (media_type, file) in enumerate(items):
+            name = f"file{index}"
+            entry = {"type": media_type, "media": f"attach://{name}"}
+            if index == 0 and caption:
+                entry.update(caption=caption, parse_mode="HTML")
+            media.append(entry)
+            files[name] = file
+        return await self.call_multipart("sendMediaGroup", files, chat_id=chat_id, media=media,
+                                         disable_notification=disable_notification)
 
     async def get_file(self, file_id: str) -> dict:
         return await self.call("getFile", file_id=file_id)

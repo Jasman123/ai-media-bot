@@ -51,3 +51,23 @@ class WizardState(Protocol):
     async def put_payload(self, data: dict[str, Any], ttl_s: int = ...) -> str: ...
 
     async def get_payload(self, pid: str) -> dict[str, Any] | None: ...
+
+
+class Storage(Protocol):
+    """Object storage for inputs and results (own bucket: provider URLs expire)."""
+
+    async def put(self, key: str, data: bytes, mime: str) -> None: ...
+
+    async def get(self, key: str) -> bytes: ...
+
+    async def delete(self, key: str) -> None: ...
+
+    async def url(self, key: str, expires_s: int = 3600) -> str:
+        """A time-limited URL a provider (or the user) can fetch without credentials."""
+        ...
+
+
+class SignedMediaReader(Protocol):
+    """Serves storage objects behind signed URLs (only the local-disk adapter needs this)."""
+
+    async def read_signed(self, key: str, expires: int, signature: str) -> tuple[bytes, str] | None: ...

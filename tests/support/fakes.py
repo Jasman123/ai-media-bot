@@ -233,3 +233,95 @@ class InMemoryLedgerRepository:
         return [LedgerEntry(id=i, user_id=e.user_id, bucket=e.bucket, amount=e.amount, kind=e.kind,
                             created_at=self.now, reservation_id=e.reservation_id, job_id=e.job_id,
                             expires_at=e.expires_at, note=e.note) for i, e in rows]
+
+
+class InMemoryJobRepository:
+    def __init__(self) -> None:
+        self.jobs: dict[str, Any] = {}
+
+    async def add(self, job) -> None:
+        self.jobs[job.id] = replace(job, heartbeat_at=job.created_at)
+
+    async def get(self, job_id: str):
+        return self.jobs.get(job_id)
+
+    def _apply(self, job, fields):
+        fields = dict(fields)
+        if "attempts_increment" in fields:
+            fields["attempts"] = job.attempts + fields.pop("attempts_increment")
+        return replace(job, **fields)
+
+    async def transition(self, job_id, expected, new, **fields):
+        job = self.jobs.get(job_id)
+        if job is None or job.status not in expected:
+            return None
+        self.jobs[job_id] = self._apply(job, {**fields, "status": new})
+        return self.jobs[job_id]
+
+    async def update(self, job_id, **fields):
+        if job_id not in self.jobs:
+            raise NotFound(job_id)
+        self.jobs[job_id] = self._apply(self.jobs[job_id], fields)
+        return self.jobs[job_id]
+
+    async def find_by_provider_job(self, provider, provider_job_id):
+        return next((j for j in self.jobs.values()
+                     if j.provider == provider and j.provider_job_id == provider_job_id), None)
+
+    async def count_active(self, user_id: int) -> int:
+        from app.domain.jobs import ACTIVE_STATUSES
+
+        return sum(1 for j in self.jobs.values() if j.user_id == user_id and j.status in ACTIVE_STATUSES)
+
+    async def stale(self, status, older_than):
+        return [j for j in self.jobs.values()
+                if j.status == status and (j.heartbeat_at or j.created_at) < older_than]
+
+    async def overdue(self, now):
+        from app.domain.jobs import FAILABLE_STATUSES
+
+        return [j for j in self.jobs.values() if j.status in FAILABLE_STATUSES and j.deadline_at
+                and j.deadline_at < now]
+
+    async def queue_position(self, job) -> int:
+        from app.domain.jobs import JobStatus
+
+        return 1 + sum(1 for j in self.jobs.values() if j.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+                       and j.created_at < job.created_at)
+
+
+class InMemoryStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}
+
+    async def put(self, key: str, data: bytes, mime: str) -> None:
+        self.objects[key] = (data, mime)
+
+    async def get(self, key: str) -> bytes:
+        return self.objects[key][0]
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
+    async def url(self, key: str, expires_s: int = 3600) -> str:
+        return f"https://storage.test/{key}?ttl={expires_s}"
+
+
+class RecordingChannel:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.delivered: list[tuple[Any, list]] = []
+        self.failures: list[tuple[Any, Any, bool]] = []
+        self.progress_updates: list[tuple[Any, Any]] = []
+        self.error = error
+
+    async def deliver(self, job, files):
+        if self.error is not None:
+            raise self.error
+        self.delivered.append((job, files))
+        return {"file_ids": [f"fid-{i}" for i, _ in enumerate(files)]}
+
+    async def failed(self, job, reason, refunded) -> None:
+        self.failures.append((job, reason, refunded))
+
+    async def progress(self, job, progress) -> None:
+        self.progress_updates.append((job, progress))

@@ -44,6 +44,29 @@ class Settings(BaseSettings):
     fake_provider_webhook_secret: str = "fake-webhook-secret"  # noqa: S105 - dev-only fake, not a credential
     catalog_seed_path: str = ""          # empty = app/infra/seed/catalog.yaml
 
+    # Jobs
+    job_image_timeout_s: int = 180
+    job_video_timeout_s: int = 900
+    job_image_poll_s: float = 2.0
+    job_video_poll_s: float = 10.0
+    job_max_submit_retries: int = 3
+    job_stuck_after_s: int = 120
+
+    # Storage: "local" (disk + signed /media URLs) or "s3" (Cloudflare R2 / any S3)
+    public_base_url: str = ""            # defaults to WEBHOOK_URL; used for provider webhooks and media links
+    storage_backend: Literal["local", "s3"] = "local"
+    storage_dir: str = "media"
+    media_signing_key: str = ""          # defaults to WEBHOOK_SECRET
+    s3_endpoint_url: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket: str = ""
+    s3_region: str = "auto"
+
+    @property
+    def base_url(self) -> str:
+        return (self.public_base_url or self.webhook_url).rstrip("/")
+
 
 @lru_cache
 def get_settings() -> Settings:

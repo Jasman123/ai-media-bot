@@ -61,6 +61,23 @@ credits:
   free_note: "<i>Kredit gratis hanya bisa dipakai untuk gambar.</i>"
   total: "Total: <b>{total}</b> kredit"
 
+job:
+  started: "⏳ Sedang dibuat… perkiraan {eta} detik."
+  progress_queued: "⏳ Dalam antrean (posisi {position})…"
+  progress_running: "⏳ Sedang diproses… sisa sekitar {eta} detik."
+  done: "✅ Selesai! Terpakai {credits} kredit."
+  refunded: "💸 {credits} kredit sudah dikembalikan ke saldo kamu."
+  failed:
+    moderation: "🚫 Permintaan ini tidak bisa diproses karena melanggar aturan konten (SFW). Coba ubah prompt-nya."
+    invalid_input: "⚠️ Masukan tidak bisa diproses (misalnya foto rusak atau opsi tidak didukung). Coba lagi dengan foto atau pengaturan lain."
+    provider_down: "⚠️ Layanan pembuat gambar/video sedang gangguan. Coba lagi beberapa menit lagi."
+    provider_busy: "⚠️ Layanan sedang sangat sibuk. Coba lagi sebentar lagi."
+    provider_error: "⚠️ Pembuatan gagal di sisi penyedia. Coba lagi."
+    timeout: "⌛ Proses terlalu lama dan dihentikan."
+    no_model: "⚠️ Pilihan ini sedang tidak tersedia. Coba tingkat kualitas lain."
+    delivery: "⚠️ Hasil tidak bisa dikirim."
+    budget: "⏸ Kapasitas harian sedang penuh. Coba lagi besok, ya."
+
 commands:
   start: "Mulai"
   menu: "Menu utama"

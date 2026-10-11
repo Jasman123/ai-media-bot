@@ -61,6 +61,23 @@ credits:
   free_note: "<i>Free credits can only be used for images.</i>"
   total: "Total: <b>{total}</b> credits"
 
+job:
+  started: "⏳ Creating… about {eta} seconds."
+  progress_queued: "⏳ In the queue (position {position})…"
+  progress_running: "⏳ Working on it… about {eta} seconds left."
+  done: "✅ Done! Used {credits} credits."
+  refunded: "💸 {credits} credits have been returned to your balance."
+  failed:
+    moderation: "🚫 This request can't be processed because it breaks the content rules (SFW). Try changing the prompt."
+    invalid_input: "⚠️ The input couldn't be processed (for example a broken photo or an unsupported option). Try another photo or setting."
+    provider_down: "⚠️ The image/video service is having problems. Please try again in a few minutes."
+    provider_busy: "⚠️ The service is very busy right now. Please try again shortly."
+    provider_error: "⚠️ Generation failed at the provider. Please try again."
+    timeout: "⌛ It took too long and was stopped."
+    no_model: "⚠️ This option isn't available right now. Try another quality tier."
+    delivery: "⚠️ The result couldn't be delivered."
+    budget: "⏸ Today's capacity is full. Please try again tomorrow."
+
 commands:
   start: "Start"
   menu: "Main menu"
