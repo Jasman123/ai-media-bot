@@ -1,43 +1,32 @@
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from ..db import utcnow
-from ..models import User
+from ..domain.errors import NotFound
+from ..domain.ports import UnitOfWork
+from ..domain.users import TelegramIdentity, User, UserRepository, normalize_language
 
 
-async def get_or_create_user(
-    session: AsyncSession,
-    telegram_id: int,
-    username: str | None = None,
-    language_code: str | None = None,
-    kind: str = "user",
-) -> tuple[User, bool]:
-    """Race-safe upsert keyed on telegram_id. Returns (user, created).
+class UserService:
+    def __init__(self, users: UserRepository, uow: UnitOfWork):
+        self._users = users
+        self._uow = uow
 
-    New users start in Bahasa Indonesia (D1) whatever their Telegram client language; /start offers a picker.
-    """
-    inserted = await session.scalar(
-        insert(User)
-        .values(telegram_id=telegram_id, username=username, kind=kind, language="id")
-        .on_conflict_do_nothing(index_elements=[User.telegram_id])
-        .returning(User.id)
-    )
-    if inserted is None:
-        await session.execute(
-            update(User).where(User.telegram_id == telegram_id).values(last_seen_at=utcnow(), username=username)
-        )
-    user = await session.scalar(
-        select(User).where(User.telegram_id == telegram_id).execution_options(populate_existing=True)
-    )
-    return user, inserted is not None
+    async def register_seen(self, identity: TelegramIdentity) -> tuple[User, bool]:
+        """Create the user on first contact (race-safe) or refresh last-seen. Returns (user, created)."""
+        user, created = await self._users.upsert_seen(identity)
+        await self._uow.commit()
+        return user, created
 
+    async def choose_language(self, user_id: int, language: str) -> User:
+        user = await self._users.set_language(user_id, normalize_language(language))
+        await self._uow.commit()
+        return user
 
-async def get_user_by_telegram_id(session: AsyncSession, telegram_id: int) -> User | None:
-    return await session.scalar(select(User).where(User.telegram_id == telegram_id))
+    async def get_by_telegram_id(self, telegram_id: int) -> User:
+        user = await self._users.get_by_telegram_id(telegram_id)
+        if user is None:
+            raise NotFound(f"user {telegram_id}")
+        return user
 
-
-async def set_language(session: AsyncSession, user: User, language: str) -> None:
-    user.language = language
-    user.language_chosen = True
-    session.add(user)
+    async def set_banned(self, telegram_id: int, banned: bool, reason: str | None = None) -> User:
+        user = await self.get_by_telegram_id(telegram_id)
+        user = await self._users.set_banned(user.id, banned, reason if banned else None)
+        await self._uow.commit()
+        return user

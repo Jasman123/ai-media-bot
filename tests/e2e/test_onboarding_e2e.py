@@ -2,13 +2,14 @@
 
 from sqlalchemy import select, update
 
-from app.models import User
+from app.bot.router import HandlerSpec, Router
+from app.infra.models import UserRow
 from tests.support import updates
 
 
-async def _db_user(stack, telegram_id: int) -> User:
-    async with stack.container.db() as session:
-        return await session.scalar(select(User).where(User.telegram_id == telegram_id))
+async def _db_user(stack, telegram_id: int) -> UserRow:
+    async with stack.sessionmaker() as session:
+        return await session.scalar(select(UserRow).where(UserRow.telegram_id == telegram_id))
 
 
 async def test_new_user_picks_language_then_sees_menu(stack):
@@ -55,8 +56,8 @@ async def test_duplicate_delivery_is_processed_once(stack):
 async def test_banned_user_is_told_and_nothing_else_runs(stack):
     user = stack.user(8004)
     await user.send("/start")
-    async with stack.container.db() as session:
-        await session.execute(update(User).where(User.telegram_id == 8004).values(is_banned=True))
+    async with stack.sessionmaker() as session:
+        await session.execute(update(UserRow).where(UserRow.telegram_id == 8004).values(is_banned=True))
         await session.commit()
     await user.send("/menu")
     assert "diblokir" in user.last_text()
@@ -83,13 +84,11 @@ async def test_group_chatter_is_ignored(stack):
 
 
 async def test_handler_crash_sends_generic_error_and_job_still_succeeds(stack, monkeypatch):
-    from app.bot.handlers import core
-
     async def boom(ctx):
         raise RuntimeError("bug")
 
-    monkeypatch.setitem(stack.container.router.commands, "help", boom)
+    router = await stack.di.get(Router)
+    monkeypatch.setitem(router.commands, "help", HandlerSpec.of(boom))
     user = stack.user(8007)
-    await user.send("/help")
+    await user.send("/help")  # drain() would raise if the job itself had failed
     assert user.last_text().startswith("Maaf, terjadi kesalahan")
-    assert core.router  # module still importable

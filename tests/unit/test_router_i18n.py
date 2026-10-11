@@ -1,11 +1,10 @@
 import pytest
 
 from app.bot import build_router
-from app.bot.context import Ctx
+from app.bot.dispatcher import parse_command
 from app.bot.keyboards import CALLBACK_LIMIT, cb, main_menu
-from app.bot.router import Router, _parse_command, _route
+from app.bot.router import HandlerSpec, Router
 from app.i18n import I18n, placeholders
-from app.models import User
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +50,7 @@ def test_main_menu_buttons_fit_and_are_namespaced(i18n):
     ("hello", None),
 ])
 def test_parse_command(text, expected):
-    assert _parse_command(text, "test_media_bot") == expected
+    assert parse_command(text, "test_media_bot") == expected
 
 
 def test_include_rejects_duplicates():
@@ -78,80 +77,24 @@ def test_build_router_registers_core_handlers():
     assert {"menu", "lang", "help", "set"} <= set(router.callbacks)
 
 
-class _State:
-    def __init__(self, step=None):
-        self.step = step
+def test_handler_spec_extracts_typed_dependencies():
+    class Service:
+        pass
 
-    async def get(self, user_id):
-        return {"step": self.step, "data": {}}
+    async def handler(ctx, svc: Service, other: int) -> None: ...
 
-
-class _Container:
-    def __init__(self, i18n, step=None):
-        self.i18n = i18n
-        self.state = _State(step)
-
-        class S:
-            bot_username = "test_media_bot"
-
-        self.settings = S()
+    spec = HandlerSpec.of(handler)
+    assert spec.deps == {"svc": Service, "other": int}
 
 
-def _ctx(i18n, step=None, banned=False):
-    user = User(id=1, telegram_id=1, language="id", is_banned=banned)
-    return Ctx(container=_Container(i18n, step), update={}, user=user)
+def test_handler_spec_requires_type_hints_for_dependencies():
+    async def untyped(ctx, svc) -> None: ...
+
+    async def no_ctx() -> None: ...
+
+    with pytest.raises(TypeError):
+        HandlerSpec.of(untyped)
+    with pytest.raises(TypeError):
+        HandlerSpec.of(no_ctx)
 
 
-async def _run(update, i18n, step=None, banned=False):
-    hits = []
-    router = Router()
-
-    @router.command("start")
-    async def start(ctx):
-        hits.append(("start", ctx.args))
-
-    @router.callback("img")
-    async def img(ctx):
-        hits.append(("img", ctx.args))
-
-    @router.state("img:prompt")
-    async def prompt(ctx):
-        hits.append(("state", ctx.text))
-
-    @router.on("text")
-    async def text(ctx):
-        hits.append(("text", ctx.text))
-
-    @router.on("photo")
-    async def photo(ctx):
-        hits.append(("photo", None))
-
-    @router.on("successful_payment")
-    async def paid(ctx):
-        hits.append(("paid", None))
-
-    await _route(_ctx(i18n, step, banned), router, update)
-    return hits
-
-
-async def test_route_command_callback_state_and_media(i18n):
-    from tests.support import updates
-
-    assert await _run(updates.message(1, "/start ref_X"), i18n) == [("start", ["ref_X"])]
-    assert await _run(updates.callback(1, "img:tier:fast"), i18n) == [("img", ["tier", "fast"])]
-    assert await _run(updates.message(1, "kucing"), i18n) == [("text", "kucing")]
-    assert await _run(updates.message(1, "kucing"), i18n, step="img:prompt") == [("state", "kucing")]
-    assert await _run(updates.message(1, None, photo_file_id="f"), i18n) == [("photo", None)]
-
-
-async def test_group_messages_only_route_commands(i18n):
-    from tests.support import updates
-
-    assert await _run(updates.message(1, "hello", chat_id=-100, chat_type="group"), i18n) == []
-    assert await _run(updates.message(1, "/start", chat_id=-100, chat_type="group"), i18n) == [("start", [])]
-
-
-async def test_banned_users_still_get_payments_processed(i18n):
-    from tests.support import updates
-
-    assert await _run(updates.successful_payment(1, "p", 50, "c1"), i18n, banned=True) == [("paid", None)]

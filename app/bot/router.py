@@ -1,51 +1,66 @@
-"""Update routing (C5): commands, callback namespaces, wizard states, media and payment updates."""
+"""Handler registry (C5): commands, callback namespaces, wizard-state text steps and update events.
 
-import logging
+Handlers are plain async functions. The first parameter is the per-update `Ctx`; every further parameter is a
+dependency resolved by type from the DI container, e.g.
+
+    @router.callback("lang")
+    async def choose_language(ctx: Ctx, users: UserService) -> None: ...
+"""
+
+import inspect
+import typing
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any
 
-from ..services.users import get_or_create_user
-from ..telegram import TelegramError
-from .context import Ctx
-
-if TYPE_CHECKING:
-    from ..container import Container
-
-logger = logging.getLogger(__name__)
-
-Handler = Callable[[Ctx], Awaitable[None]]
-
-EVENT_KINDS = {
+EVENT_KINDS = frozenset({
     "text", "photo", "voice", "video", "pre_checkout", "successful_payment", "refunded_payment",
     "inline_query", "my_chat_member", "unknown_command", "unknown_callback",
-}
+})
+
+
+@dataclass(frozen=True)
+class HandlerSpec:
+    fn: Callable[..., Awaitable[None]]
+    deps: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, fn: Callable[..., Awaitable[None]]) -> "HandlerSpec":
+        params = list(inspect.signature(fn).parameters)
+        if not params:
+            raise TypeError(f"handler {fn.__qualname__} must take ctx as first parameter")
+        hints = typing.get_type_hints(fn)
+        missing = [p for p in params[1:] if p not in hints]
+        if missing:
+            raise TypeError(f"handler {fn.__qualname__}: dependencies need type hints: {missing}")
+        return cls(fn=fn, deps={p: hints[p] for p in params[1:]})
 
 
 class Router:
     def __init__(self) -> None:
-        self.commands: dict[str, Handler] = {}
-        self.callbacks: dict[str, Handler] = {}
-        self.states: dict[str, Handler] = {}
-        self.events: dict[str, Handler] = {}
+        self.commands: dict[str, HandlerSpec] = {}
+        self.callbacks: dict[str, HandlerSpec] = {}
+        self.states: dict[str, HandlerSpec] = {}
+        self.events: dict[str, HandlerSpec] = {}
 
-    # ------------------------------------------------------------------ registration
     def command(self, *names: str):
-        def deco(fn: Handler) -> Handler:
+        def deco(fn):
+            spec = HandlerSpec.of(fn)
             for name in names:
-                self.commands[name.lstrip("/").lower()] = fn
+                self.commands[name.lstrip("/").lower()] = spec
             return fn
         return deco
 
     def callback(self, namespace: str):
-        def deco(fn: Handler) -> Handler:
-            self.callbacks[namespace] = fn
+        def deco(fn):
+            self.callbacks[namespace] = HandlerSpec.of(fn)
             return fn
         return deco
 
     def state(self, step: str):
         """Free-text input while the user's wizard is at `step`."""
-        def deco(fn: Handler) -> Handler:
-            self.states[step] = fn
+        def deco(fn):
+            self.states[step] = HandlerSpec.of(fn)
             return fn
         return deco
 
@@ -53,155 +68,20 @@ class Router:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind {kind}")
 
-        def deco(fn: Handler) -> Handler:
-            self.events[kind] = fn
+        def deco(fn):
+            self.events[kind] = HandlerSpec.of(fn)
             return fn
         return deco
 
     def include(self, other: "Router") -> None:
-        for name, table in (("commands", other.commands), ("callbacks", other.callbacks),
-                            ("states", other.states), ("events", other.events)):
-            mine = getattr(self, name)
-            clash = set(mine) & set(table)
+        for name in ("commands", "callbacks", "states", "events"):
+            mine, theirs = getattr(self, name), getattr(other, name)
+            clash = set(mine) & set(theirs)
             if clash:
                 raise ValueError(f"duplicate {name}: {sorted(clash)}")
-            mine.update(table)
+            mine.update(theirs)
 
-
-def _sender(update: dict) -> dict | None:
-    for key in ("message", "callback_query", "pre_checkout_query", "inline_query", "my_chat_member"):
-        if key in update:
-            return update[key].get("from")
-    return None
-
-
-def _parse_command(text: str, bot_username: str) -> tuple[str, list[str]] | None:
-    if not text.startswith("/"):
-        return None
-    head, *rest = text.split()
-    name, _, target = head[1:].partition("@")
-    if target and bot_username and target.lower() != bot_username.lower():
-        return None  # a command addressed to another bot in a group
-    return name.lower(), rest
-
-
-async def dispatch(container: "Container", router: Router, update: dict) -> None:
-    sender = _sender(update)
-    if not sender or sender.get("is_bot"):
-        return
-
-    async with container.db() as session:
-        user, _ = await get_or_create_user(
-            session, sender["id"], username=sender.get("username"), language_code=sender.get("language_code")
-        )
-        await session.commit()
-
-    ctx = Ctx(container=container, update=update, user=user)
-    try:
-        await _route(ctx, router, update)
-    except TelegramError:
-        raise  # let the worker decide on retry (e.g. 429 retry_after)
-    except Exception:
-        logger.exception("Handler failed", extra={"update_id": update.get("update_id"), "user_id": user.id})
-        if ctx.chat_id:
-            try:
-                await ctx.reply(ctx.t("errors.generic"))
-            except TelegramError:
-                pass
-
-
-async def _route(ctx: Ctx, router: Router, update: dict) -> None:
-    banned = ctx.user is not None and ctx.user.is_banned
-
-    if "pre_checkout_query" in update:
-        handler = router.events.get("pre_checkout")
-        if handler:
-            await handler(ctx)
-        return
-
-    if "inline_query" in update:
-        handler = router.events.get("inline_query")
-        if handler and not banned:
-            await handler(ctx)
-        return
-
-    if "my_chat_member" in update:
-        handler = router.events.get("my_chat_member")
-        if handler:
-            ctx.chat_id = update["my_chat_member"]["chat"]["id"]
-            ctx.chat_type = update["my_chat_member"]["chat"]["type"]
-            await handler(ctx)
-        return
-
-    if "callback_query" in update:
-        query = update["callback_query"]
-        ctx.callback = query
-        if query.get("message"):
-            ctx.chat_id = query["message"]["chat"]["id"]
-            ctx.chat_type = query["message"]["chat"]["type"]
-        if banned:
-            await ctx.answer(ctx.t("errors.banned"), alert=True)
-            return
-        namespace, *args = (query.get("data") or "").split(":")
-        ctx.args = args
-        handler = router.callbacks.get(namespace) or router.events.get("unknown_callback")
-        if handler:
-            await handler(ctx)
-        else:
-            await ctx.answer()
-        return
-
-    message = update.get("message")
-    if not message:
-        return
-    ctx.message = message
-    ctx.chat_id = message["chat"]["id"]
-    ctx.chat_type = message["chat"]["type"]
-
-    # Payment service messages are processed even for banned users: money must never be lost.
-    if "successful_payment" in message:
-        handler = router.events.get("successful_payment")
-        if handler:
-            await handler(ctx)
-        return
-    if "refunded_payment" in message:
-        handler = router.events.get("refunded_payment")
-        if handler:
-            await handler(ctx)
-        return
-
-    if banned:
-        if ctx.is_private:
-            await ctx.reply(ctx.t("errors.banned"))
-        return
-
-    text = message.get("text") or ""
-    parsed = _parse_command(text, ctx.container.settings.bot_username)
-    if parsed:
-        name, ctx.args = parsed
-        handler = router.commands.get(name) or router.events.get("unknown_command")
-        if handler:
-            await handler(ctx)
-        return
-
-    if not ctx.is_private:
-        return  # in groups we only react to commands
-
-    if "photo" in message or _is_image_document(message):
-        handler = router.events.get("photo")
-    elif "voice" in message:
-        handler = router.events.get("voice")
-    elif "video" in message:
-        handler = router.events.get("video")
-    elif text:
-        state = await ctx.container.state.get(ctx.user.id)
-        handler = router.states.get(state.get("step") or "") or router.events.get("text")
-    else:
-        handler = None
-    if handler:
-        await handler(ctx)
-
-
-def _is_image_document(message: dict) -> bool:
-    doc = message.get("document")
-    return bool(doc and str(doc.get("mime_type", "")).startswith("image/"))
+    def dependency_types(self) -> set[Any]:
+        """Every type some handler asks for; used to validate DI wiring at startup and in tests."""
+        specs = [*self.commands.values(), *self.callbacks.values(), *self.states.values(), *self.events.values()]
+        return {t for spec in specs for t in spec.deps.values()}

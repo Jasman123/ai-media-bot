@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.telegram import InputFile, TelegramClient, TelegramError
+from app.infra.telegram import InputFile, TelegramClient, TelegramError
 from tests.support.fake_telegram import TEST_TOKEN, FakeTelegram
 from tests.support.live_server import fake_telegram_asgi, serve
 

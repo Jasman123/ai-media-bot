@@ -1,52 +1,55 @@
+"""HTTP entrypoint: `uvicorn app.main:app`. Importing this module never reads env vars; the DI graph is
+validated here but nothing is resolved until startup."""
+
 import logging
 from contextlib import asynccontextmanager
 
+from dishka import AsyncContainer
+from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 
-from .config import get_settings
-from .container import Container, build_container
+from .api import system, webhook
+from .bot import register_commands
+from .config import Settings
+from .di import make_container, warm_up
+from .i18n import I18n
+from .infra.telegram import TelegramClient
 from .logging_setup import configure_logging
-from .routers import api, webhook
 
 logger = logging.getLogger(__name__)
 
 
-async def register_commands(ctx: Container) -> None:
-    from .bot import BOT_COMMANDS
-
-    for lang in ("id", "en"):
-        commands = [{"command": c, "description": ctx.i18n.t(lang, f"commands.{c}")} for c in BOT_COMMANDS]
-        await ctx.telegram.set_my_commands(commands, language_code=None if lang == "id" else lang)
-
-
-def create_app(container: Container | None = None) -> FastAPI:
-    """App factory. Pass a prebuilt container in tests; production builds one from settings."""
+def create_app(container: AsyncContainer | None = None) -> FastAPI:
+    """App factory. Tests pass a container built with override providers; it is then closed by the caller."""
+    owned = container is None
+    di = container or make_container()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        owned = container is None
-        ctx = container or await build_container(get_settings())
+        settings = await di.get(Settings)
         if owned:
-            configure_logging(ctx.settings.log_level, ctx.settings.log_json)
-        app.state.container = ctx
-        settings = ctx.settings
+            configure_logging(settings.log_level, settings.log_json)
+        # Fail fast: connect Postgres/Redis now rather than inside the first webhook call.
+        await warm_up(di)
         if settings.webhook_url and settings.set_webhook_on_startup:
-            await ctx.telegram.set_webhook(
+            telegram = await di.get(TelegramClient)
+            await telegram.set_webhook(
                 f"{settings.webhook_url.rstrip('/')}/webhook/telegram",
                 settings.webhook_secret,
                 drop_pending_updates=settings.drop_pending_updates,
             )
-            await register_commands(ctx)
+            await register_commands(telegram, await di.get(I18n))
             logger.info("Webhook and commands registered")
         try:
             yield
         finally:
             if owned:
-                await ctx.aclose()
+                await di.close()
 
     app = FastAPI(title="ai-media-bot", lifespan=lifespan)
     app.include_router(webhook.router)
-    app.include_router(api.router)
+    app.include_router(system.router)
+    setup_dishka(di, app)
     return app
 
 

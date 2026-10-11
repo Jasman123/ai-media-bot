@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from app.telegram import TelegramClient, TelegramError
+from app.infra.telegram import TelegramClient, TelegramError
 from tests.conftest import load_fixture
 from tests.support.fake_telegram import TEST_TOKEN
 

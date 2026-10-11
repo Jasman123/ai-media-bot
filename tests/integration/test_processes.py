@@ -11,7 +11,7 @@ import sys
 
 import httpx
 
-from app.queue import QUEUE_UPDATES
+from app.domain.tasks import QUEUE_UPDATES
 from tests.conftest import ROOT, TEST_REDIS_URL, WEBHOOK_SECRET
 from tests.support import updates
 from tests.support.fake_telegram import TEST_TOKEN, FakeTelegram

@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.container import build_container
 from app.main import create_app
+from tests.support.di import make_test_container
 from tests.support.fake_telegram import TEST_TOKEN, FakeTelegram
 
 ROOT = Path(__file__).parent.parent
@@ -60,14 +60,6 @@ def fake_tg() -> FakeTelegram:
     return FakeTelegram()
 
 
-@pytest.fixture
-async def container(settings, fake_tg):
-    """Container without Postgres/Redis, for unit tests."""
-    ctx = await build_container(settings, telegram=fake_tg.client(), engine=None, redis=None)
-    yield ctx
-    await ctx.telegram.aclose()
-
-
 # ---------------------------------------------------------------------------- services (integration / e2e)
 def run_migrations(url: str, revision: str = "head") -> None:
     from alembic.config import Config
@@ -100,7 +92,7 @@ async def pg_url():
 
 @pytest.fixture(scope="session")
 async def engine(pg_url):
-    from app.db import make_engine
+    from app.infra.db import make_engine
 
     eng = make_engine(pg_url, pool_size=5)
     yield eng
@@ -109,7 +101,7 @@ async def engine(pg_url):
 
 @pytest.fixture(scope="session")
 async def redis_pool():
-    from app.queue import create_redis
+    from app.infra.queue import create_redis
 
     pool = await create_redis(TEST_REDIS_URL)
     yield pool
@@ -121,7 +113,7 @@ async def clean(engine, redis_pool):
     """Empty every table and the Redis db before a test."""
     from sqlalchemy import text
 
-    from app.models import Base
+    from app.infra.models import Base
 
     tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:
@@ -132,21 +124,24 @@ async def clean(engine, redis_pool):
 
 @pytest.fixture
 def sessionmaker(engine, clean):
-    from app.db import make_sessionmaker
+    from app.infra.db import make_sessionmaker
 
     return make_sessionmaker(engine)
 
 
 @pytest.fixture
 async def stack(engine, redis_pool, clean, fake_tg, settings):
+    """Real app + Postgres + Redis/ARQ, production DI wiring, fake Telegram."""
     from tests.support.stack import Stack
 
-    container = await build_container(settings, telegram=fake_tg.client(), engine=engine, redis=redis_pool)
-    app = create_app(container)
+    telegram = fake_tg.client()
+    di = make_test_container(settings, telegram, engine=engine, redis=redis_pool)
+    app = create_app(di)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
-            yield Stack(container, fake_tg, http)
-    await container.telegram.aclose()
+            yield Stack(di, fake_tg, http, redis_pool, engine)
+    await di.close()
+    await telegram.aclose()
 
 
 @pytest.fixture

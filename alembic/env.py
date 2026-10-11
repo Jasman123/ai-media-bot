@@ -4,7 +4,7 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
-from app.models import Base
+from app.infra.models import Base
 
 config = context.config
 target_metadata = Base.metadata

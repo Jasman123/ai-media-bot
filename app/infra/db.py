@@ -28,3 +28,16 @@ def make_engine(url: str, **kwargs) -> AsyncEngine:
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+class SqlUnitOfWork:
+    """UnitOfWork over the request-scoped AsyncSession shared by all repositories in that scope."""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def commit(self) -> None:
+        await self._session.commit()
+
+    async def rollback(self) -> None:
+        await self._session.rollback()

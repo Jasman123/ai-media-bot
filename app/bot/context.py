@@ -1,19 +1,21 @@
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from ..models import User
-
-if TYPE_CHECKING:
-    from ..container import Container
+from ..domain.ports import WizardState
+from ..domain.users import User
+from ..i18n import I18n
+from ..infra.telegram import TelegramClient, TelegramError
 
 
 @dataclass
 class Ctx:
-    """Everything a handler needs about one incoming update."""
+    """Presentation context for one update: who, where, and how to talk back. No business logic here."""
 
-    container: "Container"
     update: dict
-    user: User | None = None
+    user: User
+    tg: TelegramClient
+    i18n: I18n
+    state: WizardState
     chat_id: int | None = None
     chat_type: str = "private"
     message: dict | None = None
@@ -22,11 +24,7 @@ class Ctx:
 
     @property
     def lang(self) -> str:
-        return self.user.language if self.user else self.container.i18n.default
-
-    @property
-    def tg(self):
-        return self.container.telegram
+        return self.user.language
 
     @property
     def is_private(self) -> bool:
@@ -45,7 +43,7 @@ class Ctx:
         return None
 
     def t(self, key: str, **kwargs: Any) -> str:
-        return self.container.i18n.t(self.lang, key, **kwargs)
+        return self.i18n.t(self.lang, key, **kwargs)
 
     async def reply(self, text: str, reply_markup: dict | None = None, **kwargs: Any) -> dict:
         return await self.tg.send_message(self.chat_id, text, reply_markup=reply_markup, **kwargs)
@@ -54,8 +52,6 @@ class Ctx:
         """On a button press, replace the pressed message; otherwise send a new one."""
         message_id = self.callback_message_id
         if message_id is not None:
-            from ..telegram import TelegramError
-
             try:
                 return await self.tg.edit_message_text(self.chat_id, message_id, text, reply_markup=reply_markup)
             except TelegramError:
@@ -65,3 +61,8 @@ class Ctx:
     async def answer(self, text: str | None = None, alert: bool = False) -> None:
         if self.callback:
             await self.tg.answer_callback_query(self.callback["id"], text=text, show_alert=alert)
+
+    def with_user(self, user: User) -> "Ctx":
+        """Swap in a refreshed user (e.g. after a language change) so later strings use the new language."""
+        self.user = user
+        return self
