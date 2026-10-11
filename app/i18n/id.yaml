@@ -43,6 +43,7 @@ help:
     <b>Bantuan</b>
 
     /menu — menu utama
+    /saldo — saldo kredit
     /settings — pengaturan dan bahasa
     /help — bantuan ini
 
@@ -52,8 +53,17 @@ settings:
   title: "⚙️ <b>Pengaturan</b>"
   language: "🌐 Bahasa: {language}"
 
+credits:
+  title: "💰 <b>Kredit kamu</b>"
+  paid: "Berbayar: <b>{paid}</b>"
+  free: "Gratis: <b>{free}</b>"
+  free_until: "Gratis: <b>{free}</b> (berlaku sampai {date})"
+  free_note: "<i>Kredit gratis hanya bisa dipakai untuk gambar.</i>"
+  total: "Total: <b>{total}</b> kredit"
+
 commands:
   start: "Mulai"
   menu: "Menu utama"
+  saldo: "Saldo kredit"
   help: "Bantuan"
   settings: "Pengaturan"

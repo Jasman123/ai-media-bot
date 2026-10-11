@@ -4,7 +4,8 @@ Rows never leave app.infra: repositories map them to domain entities.
 """
 
 from ..db import Base
+from .billing import LedgerEntryRow, ReservationRow
 from .catalog import CatalogRow
 from .users import UserRow
 
-__all__ = ["Base", "CatalogRow", "UserRow"]
+__all__ = ["Base", "CatalogRow", "LedgerEntryRow", "ReservationRow", "UserRow"]

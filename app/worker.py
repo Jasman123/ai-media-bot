@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 
 from arq import Retry
 from arq.connections import ArqRedis
-from arq.cron import CronJob
+from arq.cron import CronJob, cron
 from arq.worker import Worker
 from dishka import AsyncContainer
 from dishka.integrations.arq import FromDishka, inject, setup_dishka
@@ -25,6 +25,7 @@ from .di import make_container, warm_up
 from .domain.tasks import QUEUE_JOBS, QUEUE_UPDATES
 from .infra.telegram import TelegramError
 from .logging_setup import configure_logging
+from .services.ledger import LedgerService
 
 logger = logging.getLogger(__name__)
 MAX_TELEGRAM_RETRIES = 3
@@ -40,11 +41,23 @@ async def process_update(ctx: dict, update: dict, dispatcher: FromDishka[Dispatc
         logger.warning("Telegram error while handling update: %s", exc, extra={"update_id": update.get("update_id")})
 
 
+@inject
+async def expire_free_credits(ctx: dict, ledger: FromDishka[LedgerService]) -> int:
+    """Daily: free credits past their expiry leave the balance (FIFO across grants)."""
+    expired = await ledger.expire_all()
+    logger.info("Expired %s free credits", expired)
+    return expired
+
+
 FUNCTIONS: dict[str, list[Callable]] = {
     QUEUE_UPDATES: [process_update],
-    QUEUE_JOBS: [],
+    QUEUE_JOBS: [expire_free_credits],
 }
-CRON_JOBS: dict[str, list[CronJob]] = {QUEUE_UPDATES: [], QUEUE_JOBS: []}
+CRON_JOBS: dict[str, list[CronJob]] = {
+    QUEUE_UPDATES: [],
+    # 17:05 UTC = 00:05 WIB, just after midnight in Indonesia.
+    QUEUE_JOBS: [cron(expire_free_credits, hour=17, minute=5, run_at_startup=False)],
+}
 
 
 def create_worker(container: AsyncContainer, redis: ArqRedis, queue: str, *, burst: bool = False,

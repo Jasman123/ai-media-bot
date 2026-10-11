@@ -43,6 +43,7 @@ help:
     <b>Help</b>
 
     /menu — main menu
+    /saldo — credit balance
     /settings — settings and language
     /help — this help
 
@@ -52,8 +53,17 @@ settings:
   title: "⚙️ <b>Settings</b>"
   language: "🌐 Language: {language}"
 
+credits:
+  title: "💰 <b>Your credits</b>"
+  paid: "Paid: <b>{paid}</b>"
+  free: "Free: <b>{free}</b>"
+  free_until: "Free: <b>{free}</b> (valid until {date})"
+  free_note: "<i>Free credits can only be used for images.</i>"
+  total: "Total: <b>{total}</b> credits"
+
 commands:
   start: "Start"
   menu: "Main menu"
+  saldo: "Credit balance"
   help: "Help"
   settings: "Settings"

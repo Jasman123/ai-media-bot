@@ -8,14 +8,14 @@ from ..i18n import I18n
 from ..infra.telegram import TelegramClient
 from .router import Router
 
-BOT_COMMANDS = ("start", "menu", "help", "settings")
+BOT_COMMANDS = ("start", "menu", "saldo", "help", "settings")
 
 
 def build_router() -> Router:
-    from .handlers import core
+    from .handlers import core, credits
 
     router = Router()
-    for module in (core,):
+    for module in (credits, core):
         router.include(module.router)
     return router
 
