@@ -1,0 +1,10 @@
+{
+  "update_id": 870002,
+  "message": {
+    "message_id": 12,
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "language_code": "id"},
+    "chat": {"id": 7001001, "first_name": "Sari", "type": "private"},
+    "date": 1791700010,
+    "text": "kucing oranye memakai batik"
+  }
+}

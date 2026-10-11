@@ -1,0 +1,16 @@
+{
+  "update_id": 870006,
+  "message": {
+    "message_id": 15,
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "language_code": "id"},
+    "chat": {"id": 7001001, "first_name": "Sari", "type": "private"},
+    "date": 1791700040,
+    "successful_payment": {
+      "currency": "XTR",
+      "total_amount": 50,
+      "invoice_payload": "pk:coba:1",
+      "telegram_payment_charge_id": "stxABCDEF1234567890",
+      "provider_payment_charge_id": ""
+    }
+  }
+}

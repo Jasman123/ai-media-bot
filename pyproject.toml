@@ -1,0 +1,42 @@
+[project]
+name = "ai-media-bot"
+version = "0.1.0"
+description = "Telegram bot for AI image and video generation, paid in Telegram Stars"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "unit: pure logic, no I/O, no external services",
+    "fixture: driven by recorded data fixtures (Telegram updates, provider responses)",
+    "integration: needs the test Postgres and Redis (scripts/test-services.sh up)",
+    "e2e: full flow through the webhook, queue, worker and fake Telegram/provider",
+]
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S"]
+ignore = [
+    "S101",   # assert is fine in tests
+    "B008",   # FastAPI Depends() in defaults
+    "S311",   # random is fine for non-crypto ids
+    "UP017",  # datetime.UTC needs 3.11; we support 3.10
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108"]
+"docs/**" = ["E", "F", "W", "I", "B", "UP", "S"]
+"alembic/**" = ["E501"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true

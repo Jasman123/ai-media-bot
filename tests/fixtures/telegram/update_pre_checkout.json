@@ -1,0 +1,10 @@
+{
+  "update_id": 870005,
+  "pre_checkout_query": {
+    "id": "pcq-870005",
+    "from": {"id": 7001001, "is_bot": false, "first_name": "Sari", "language_code": "id"},
+    "currency": "XTR",
+    "total_amount": 50,
+    "invoice_payload": "pk:coba:1"
+  }
+}
