@@ -233,3 +233,126 @@ class InMemoryLedgerRepository:
         return [LedgerEntry(id=i, user_id=e.user_id, bucket=e.bucket, amount=e.amount, kind=e.kind,
                             created_at=self.now, reservation_id=e.reservation_id, job_id=e.job_id,
                             expires_at=e.expires_at, note=e.note) for i, e in rows]
+
+
+class InMemoryJobRepository:
+    def __init__(self) -> None:
+        self.jobs: dict[str, Any] = {}
+
+    async def add(self, job) -> None:
+        self.jobs[job.id] = job
+
+    async def get(self, job_id: str):
+        return self.jobs.get(job_id)
+
+    @staticmethod
+    def _apply(job, fields):
+        fields = dict(fields)
+        for counter in ("attempts", "deliver_attempts"):
+            if f"{counter}_increment" in fields:
+                fields[counter] = getattr(job, counter) + fields.pop(f"{counter}_increment")
+        for key in ("input_keys", "result_keys", "result_urls"):
+            if key in fields:
+                fields[key] = tuple(fields[key])
+        return replace(job, **fields)
+
+    @staticmethod
+    def _matches(job, conditions) -> bool:
+        for key, value in (conditions or {}).items():
+            if key == "lease_free":
+                held = job.lease_owner is not None and job.lease_until is not None and job.lease_until >= value
+                if held:
+                    return False
+            elif getattr(job, key) != value:
+                return False
+        return True
+
+    async def transition(self, job_id, expected, new, conditions=None, **fields):
+        job = self.jobs.get(job_id)
+        if job is None or job.status not in expected or not self._matches(job, conditions):
+            return None
+        self.jobs[job_id] = self._apply(job, {**fields, "status": new})
+        return self.jobs[job_id]
+
+    async def update(self, job_id, **fields):
+        if job_id not in self.jobs:
+            raise NotFound(job_id)
+        self.jobs[job_id] = self._apply(self.jobs[job_id], fields)
+        return self.jobs[job_id]
+
+    async def find_by_provider_job(self, provider, provider_job_id):
+        return next((j for j in self.jobs.values()
+                     if j.provider == provider and j.provider_job_id == provider_job_id), None)
+
+    async def count_active(self, user_id: int) -> int:
+        from app.domain.jobs import ACTIVE_STATUSES
+
+        return sum(1 for j in self.jobs.values() if j.user_id == user_id and j.status in ACTIVE_STATUSES)
+
+    async def abandoned(self, now):
+        from app.domain.jobs import ACTIVE_STATUSES
+
+        return [j for j in self.jobs.values()
+                if j.status in ACTIVE_STATUSES and (j.lease_until is None or j.lease_until < now)]
+
+    async def overdue(self, now):
+        from app.domain.jobs import FAILABLE_STATUSES
+
+        return [j for j in self.jobs.values() if j.status in FAILABLE_STATUSES and j.deadline_at
+                and j.deadline_at < now]
+
+    async def queue_position(self, job) -> int:
+        from app.domain.jobs import JobStatus
+
+        return 1 + sum(1 for j in self.jobs.values() if j.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+                       and j.created_at < job.created_at)
+
+
+class InMemoryStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}
+
+    async def put(self, key: str, data: bytes, mime: str) -> None:
+        self.objects[key] = (data, mime)
+
+    async def get(self, key: str) -> bytes:
+        return self.objects[key][0]
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
+    async def url(self, key: str, expires_s: int = 3600) -> str:
+        return f"https://storage.test/{key}?ttl={expires_s}"
+
+
+class RecordingChannel:
+    """DeliveryChannel fake: one step per file. `error` is raised before the first unsent step; with
+    `fail_after` it is raised after that many new steps (a partial delivery)."""
+
+    def __init__(self, error: Exception | None = None, fail_after: int | None = None) -> None:
+        self.delivered: list[tuple[Any, list]] = []
+        self.sent_steps: list[str] = []
+        self.failures: list[tuple[Any, Any, bool]] = []
+        self.progress_updates: list[tuple[Any, Any]] = []
+        self.error = error
+        self.fail_after = fail_after
+
+    async def deliver(self, job, files, progress):
+        new_steps = 0
+        for index, _ in enumerate(files):
+            step = f"file:{index}"
+            if progress.is_done(step):
+                continue
+            if self.error is not None and (self.fail_after is None or new_steps >= self.fail_after):
+                raise self.error
+            await progress.mark_done(step, {"file_ids": [f"fid-{index}"]})
+            self.sent_steps.append(step)
+            new_steps += 1
+        self.delivered.append((job, files))
+        return {"file_ids": [fid for refs in progress.refs().values() for fid in refs["file_ids"]]}
+
+    async def failed(self, job, reason, refunded) -> None:
+        self.failures.append((job, reason, refunded))
+
+    async def progress(self, job, progress) -> None:
+        self.progress_updates.append((job, progress))

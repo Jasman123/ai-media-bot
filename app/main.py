@@ -8,7 +8,7 @@ from dishka import AsyncContainer
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 
-from .api import admin, system, webhook
+from .api import admin, media, provider_webhook, system, webhook
 from .bot import register_commands
 from .config import Settings
 from .di import make_container, seed_reference_data, warm_up
@@ -51,6 +51,8 @@ def create_app(container: AsyncContainer | None = None) -> FastAPI:
     app.include_router(webhook.router)
     app.include_router(system.router)
     app.include_router(admin.router)
+    app.include_router(provider_webhook.router)
+    app.include_router(media.router)
     setup_dishka(di, app)
     return app
 

@@ -22,9 +22,11 @@ from dishka.integrations.arq import FromDishka, inject, setup_dishka
 from .bot.dispatcher import Dispatcher
 from .config import Settings
 from .di import make_container, warm_up
+from .domain.generation import ProviderStatus
 from .domain.tasks import QUEUE_JOBS, QUEUE_UPDATES
 from .infra.telegram import TelegramError
 from .logging_setup import configure_logging
+from .services.job_runner import JobRunner
 from .services.ledger import LedgerService
 
 logger = logging.getLogger(__name__)
@@ -49,14 +51,58 @@ async def expire_free_credits(ctx: dict, ledger: FromDishka[LedgerService]) -> i
     return expired
 
 
+@inject
+async def run_job(ctx: dict, job_id: str, runner: FromDishka[JobRunner]) -> None:
+    try:
+        await runner.run(job_id)
+    except Exception:
+        await runner.recover(job_id)
+        raise
+
+
+@inject
+async def poll_job(ctx: dict, job_id: str, seq: int, runner: FromDishka[JobRunner]) -> None:
+    try:
+        await runner.poll(job_id, seq)
+    except Exception:
+        await runner.recover(job_id)
+        raise
+
+
+@inject
+async def deliver_job(ctx: dict, job_id: str, runner: FromDishka[JobRunner]) -> None:
+    await runner.deliver(job_id)  # failures are retried by the delivery lease logic itself
+
+
+@inject
+async def apply_provider_status(ctx: dict, job_id: str, status: ProviderStatus, runner: FromDishka[JobRunner]) -> None:
+    try:
+        await runner.apply_status(job_id, status)
+    except Exception:
+        await runner.recover(job_id)
+        raise
+
+
+@inject
+async def sweep_jobs(ctx: dict, runner: FromDishka[JobRunner]) -> dict:
+    """Every minute: requeue lost jobs, time out overdue ones, recover interrupted deliveries."""
+    counts = await runner.sweep()
+    if any(counts.values()):
+        logger.info("Sweeper: %s", counts)
+    return counts
+
+
 FUNCTIONS: dict[str, list[Callable]] = {
     QUEUE_UPDATES: [process_update],
-    QUEUE_JOBS: [expire_free_credits],
+    QUEUE_JOBS: [run_job, poll_job, deliver_job, apply_provider_status, sweep_jobs, expire_free_credits],
 }
 CRON_JOBS: dict[str, list[CronJob]] = {
     QUEUE_UPDATES: [],
-    # 17:05 UTC = 00:05 WIB, just after midnight in Indonesia.
-    QUEUE_JOBS: [cron(expire_free_credits, hour=17, minute=5, run_at_startup=False)],
+    QUEUE_JOBS: [
+        cron(sweep_jobs, second=0, run_at_startup=True),
+        # 17:05 UTC = 00:05 WIB, just after midnight in Indonesia.
+        cron(expire_free_credits, hour=17, minute=5, run_at_startup=False),
+    ],
 }
 
 

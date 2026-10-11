@@ -15,13 +15,23 @@ from dishka import AsyncContainer, Provider, Scope, make_async_container, provid
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .bot import build_router
+from .bot.delivery import TelegramDelivery
 from .bot.dispatcher import BotConfig, Dispatcher
 from .bot.router import Router
 from .config import Settings, get_settings
 from .domain.billing import LedgerRepository
 from .domain.catalog import CatalogRepository, CatalogSeed, PricingPolicy
 from .domain.generation import MediaProvider
-from .domain.ports import Clock, TaskQueue, UnitOfWork, UpdateDeduper, WizardState
+from .domain.jobs import DeliveryChannel, JobPolicy, JobRepository
+from .domain.ports import (
+    Clock,
+    SignedMediaReader,
+    Storage,
+    TaskQueue,
+    UnitOfWork,
+    UpdateDeduper,
+    WizardState,
+)
 from .domain.users import UserRepository
 from .i18n import I18n
 from .infra.catalog_seed import DEFAULT_SEED, load_catalog_seed
@@ -30,12 +40,18 @@ from .infra.db import SqlUnitOfWork, make_engine, make_sessionmaker
 from .infra.providers.fake import FakeProvider
 from .infra.queue import ArqTaskQueue, create_redis
 from .infra.repositories.catalog import SqlCatalogRepository
+from .infra.repositories.jobs import SqlJobRepository
 from .infra.repositories.ledger import SqlLedgerRepository
 from .infra.repositories.users import SqlUserRepository
 from .infra.state import RedisUpdateDeduper, RedisWizardState
+from .infra.storage.local import LocalStorage, NoSignedMedia
+from .infra.storage.s3 import S3Storage
 from .infra.telegram import TelegramClient
 from .services.catalog import CatalogService
+from .services.generation import GenerationService
+from .services.job_runner import JobRunner
 from .services.ledger import LedgerService
+from .services.provider_webhooks import ProviderWebhookIntake
 from .services.providers import ProviderRegistry
 from .services.updates import UpdateIntake
 from .services.users import UserService
@@ -87,6 +103,27 @@ class InfraProvider(Provider):
     def deduper(self, redis: ArqRedis) -> UpdateDeduper:
         return RedisUpdateDeduper(redis)
 
+    @provide
+    def storage(self, settings: Settings) -> Storage:
+        if settings.storage_backend == "s3":
+            return S3Storage.create(settings.s3_endpoint_url, settings.s3_access_key, settings.s3_secret_key,
+                                    settings.s3_bucket, settings.s3_region)
+        secret = (settings.media_signing_key or settings.webhook_secret).encode()
+        return LocalStorage(Path(settings.storage_dir), settings.base_url, secret)
+
+    @provide
+    def signed_media(self, storage: Storage) -> SignedMediaReader:
+        return storage if isinstance(storage, LocalStorage) else NoSignedMedia()
+
+    @provide
+    def job_policy(self, settings: Settings) -> JobPolicy:
+        return JobPolicy(
+            image_timeout_s=settings.job_image_timeout_s, video_timeout_s=settings.job_video_timeout_s,
+            image_poll_s=settings.job_image_poll_s, video_poll_s=settings.job_video_poll_s,
+            max_submit_retries=settings.job_max_submit_retries, stuck_after_s=settings.job_stuck_after_s,
+            webhook_base_url=settings.base_url,
+        )
+
     @provide(scope=Scope.REQUEST)
     async def session(self, sessionmaker: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
         async with sessionmaker() as session:
@@ -127,12 +164,16 @@ class RepositoryProvider(Provider):
     users = provide(SqlUserRepository, provides=UserRepository)
     catalog = provide(SqlCatalogRepository, provides=CatalogRepository)
     ledger = provide(SqlLedgerRepository, provides=LedgerRepository)
+    jobs = provide(SqlJobRepository, provides=JobRepository)
 
 
 class ServiceProvider(Provider):
     users = provide(UserService, scope=Scope.REQUEST)
     catalog = provide(CatalogService, scope=Scope.REQUEST)
     ledger = provide(LedgerService, scope=Scope.REQUEST)
+    generation = provide(GenerationService, scope=Scope.REQUEST)
+    job_runner = provide(JobRunner, scope=Scope.REQUEST)
+    provider_webhooks = provide(ProviderWebhookIntake, scope=Scope.REQUEST)
     update_intake = provide(UpdateIntake, scope=Scope.APP)
 
 
@@ -146,6 +187,7 @@ class BotProvider(Provider):
         return BotConfig(username=settings.bot_username)
 
     dispatcher = provide(Dispatcher, scope=Scope.REQUEST)
+    delivery = provide(TelegramDelivery, scope=Scope.APP, provides=DeliveryChannel)
 
 
 def providers() -> list[Provider]:
