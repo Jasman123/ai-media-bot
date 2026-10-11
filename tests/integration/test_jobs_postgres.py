@@ -20,7 +20,8 @@ async def make_job(sessionmaker, **overrides) -> Job:
         job = Job(id=str(uuid.uuid4()), user_id=user.id, operation=Operation.TEXT2VID, tier="hemat",
                   model_id="vid-hemat-fake", status=JobStatus.QUEUED, credits_charged=35,
                   params={"duration_s": 5}, input_keys=("inputs/a.jpg",), chat_ref={"chat_id": 6001},
-                  cost_usd_estimate=Decimal("0.15"), created_at=now, deadline_at=now + timedelta(minutes=15))
+                  cost_usd_estimate=Decimal("0.15"), created_at=now, deadline_at=now + timedelta(minutes=15),
+                  lease_until=now + timedelta(minutes=2))
         job = Job(**{**job.__dict__, **overrides})
         await SqlJobRepository(session).add(job)
         await session.commit()
@@ -33,7 +34,7 @@ async def test_roundtrip_preserves_every_field(sessionmaker):
         loaded = await SqlJobRepository(session).get(job.id)
     assert loaded.params == {"duration_s": 5} and loaded.input_keys == ("inputs/a.jpg",)
     assert loaded.chat_ref == {"chat_id": 6001} and loaded.cost_usd_estimate == Decimal("0.15")
-    assert loaded.heartbeat_at is not None
+    assert loaded.lease_until is not None and loaded.poll_seq == 0 and loaded.result_urls == ()
 
 
 async def test_only_one_concurrent_claim_wins(sessionmaker):
@@ -52,17 +53,17 @@ async def test_only_one_concurrent_claim_wins(sessionmaker):
         assert (await SqlJobRepository(session).get(job.id)).attempts == 1
 
 
-async def test_stale_overdue_provider_lookup_and_queue_position(sessionmaker):
+async def test_abandoned_overdue_provider_lookup_and_queue_position(sessionmaker):
     now = datetime.now(timezone.utc)
-    old = await make_job(sessionmaker, created_at=now - timedelta(minutes=10))
+    old = await make_job(sessionmaker, created_at=now - timedelta(minutes=10),
+                         lease_until=now - timedelta(minutes=5))
     late = await make_job(sessionmaker, deadline_at=now - timedelta(seconds=1))
     fresh = await make_job(sessionmaker)
     async with sessionmaker() as session:
         repo = SqlJobRepository(session)
         await repo.update(late.id, provider="fake", provider_job_id="fake-123", result_keys=("r/1.png",))
         await session.commit()
-        stale = {j.id for j in await repo.stale(JobStatus.QUEUED, now - timedelta(minutes=5))}
-        assert stale == {old.id}
+        assert {j.id for j in await repo.abandoned(now)} == {old.id}
         assert {j.id for j in await repo.overdue(now)} == {late.id}
         found = await repo.find_by_provider_job("fake", "fake-123")
         assert found.id == late.id and found.result_keys == ("r/1.png",)
@@ -90,3 +91,26 @@ async def test_provider_webhook_endpoint_rejects_bad_requests(stack):
     bad = await stack.http.post("/webhook/provider/fake", content=b'{"job_id": "x", "status": "OK"}',
                                 headers={"x-fake-signature": "bad"})
     assert bad.status_code == 401
+
+
+async def test_compare_and_set_conditions(sessionmaker):
+    now = datetime.now(timezone.utc)
+    job = await make_job(sessionmaker, status=JobStatus.DELIVERING, lease_until=now + timedelta(minutes=5))
+    async with sessionmaker() as session:
+        repo = SqlJobRepository(session)
+        mine = await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
+                                     conditions={"lease_free": now}, lease_owner="a", deliver_attempts_increment=1)
+        assert mine is not None and mine.deliver_attempts == 1  # no owner yet → free
+        assert await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
+                                     conditions={"lease_free": now}, lease_owner="b") is None  # held by "a"
+        later = now + timedelta(minutes=10)
+        taken = await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
+                                      conditions={"lease_free": later}, lease_owner="b")
+        assert taken.lease_owner == "b"  # a's lease expired
+        assert await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERED,
+                                     conditions={"lease_owner": "a"}) is None  # fenced out
+        assert await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
+                                     conditions={"poll_seq": 0}, poll_seq=1) is not None
+        assert await repo.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
+                                     conditions={"poll_seq": 0}, poll_seq=2) is None
+        await session.commit()

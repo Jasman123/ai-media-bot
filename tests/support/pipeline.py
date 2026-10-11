@@ -63,6 +63,8 @@ class Pipeline:
                 await self.runner.poll(*args)
             elif name == "apply_provider_status":
                 await self.runner.apply_status(*args)
+            elif name == "deliver_job":
+                await self.runner.deliver(*args)
             else:
                 raise AssertionError(f"unexpected task {name}")
 
@@ -71,7 +73,7 @@ async def build_pipeline(policy: JobPolicy | None = None, channel: RecordingChan
                          delay_polls: int = 2, seed=None, pricing: PricingPolicy | None = None) -> Pipeline:
     clock = FixedClock()
     pricing = pricing or PricingPolicy()
-    policy = policy or JobPolicy(image_poll_s=0, video_poll_s=0)
+    policy = policy or JobPolicy(image_poll_s=0, video_poll_s=0, deliver_backoff_s=0)
     provider = FakeProvider(delay_polls=delay_polls)
     registry = ProviderRegistry([provider])
     uow = FakeUnitOfWork()

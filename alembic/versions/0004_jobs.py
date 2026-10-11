@@ -40,21 +40,26 @@ def upgrade() -> None:
         sa.Column("watermark", sa.Boolean(), server_default="false", nullable=False),
         sa.Column("cost_usd_estimate", sa.Numeric(precision=12, scale=6), server_default="0", nullable=False),
         sa.Column("cost_usd_actual", sa.Numeric(precision=12, scale=6), nullable=True),
+        sa.Column("result_urls", jsonb, nullable=False),
+        sa.Column("result_mime", sa.String(length=64), nullable=True),
         sa.Column("result_keys", jsonb, nullable=False),
         sa.Column("result_refs", jsonb, nullable=False),
         sa.Column("error_code", sa.String(length=32), nullable=True),
         sa.Column("attempts", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("deliver_attempts", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("poll_seq", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("lease_owner", sa.String(length=36), nullable=True),
         sa.Column("parent_job_id", sa.String(length=36), nullable=True),
         sa.Column("template_id", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deadline_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_jobs_user_id_users")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_jobs")),
     )
-    op.create_index("ix_jobs_status_heartbeat", "jobs", ["status", "heartbeat_at"], unique=False)
+    op.create_index("ix_jobs_status_lease", "jobs", ["status", "lease_until"], unique=False)
     op.create_index("ix_jobs_provider_job", "jobs", ["provider", "provider_job_id"], unique=False)
     op.create_index("ix_jobs_user_created", "jobs", ["user_id", "created_at"], unique=False)
 
@@ -62,5 +67,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_jobs_user_created", table_name="jobs")
     op.drop_index("ix_jobs_provider_job", table_name="jobs")
-    op.drop_index("ix_jobs_status_heartbeat", table_name="jobs")
+    op.drop_index("ix_jobs_status_lease", table_name="jobs")
     op.drop_table("jobs")

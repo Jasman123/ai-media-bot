@@ -2,15 +2,17 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...domain.errors import NotFound
 from ...domain.generation import Operation
-from ...domain.jobs import FAILABLE_STATUSES, Job, JobStatus
+from ...domain.jobs import ACTIVE_STATUSES, FAILABLE_STATUSES, Job, JobStatus
 from ..models import JobRow
 
-TUPLE_FIELDS = ("input_keys", "result_keys")
+TUPLE_FIELDS = ("input_keys", "result_keys", "result_urls")
+COUNTERS = {"attempts_increment": "attempts", "deliver_attempts_increment": "deliver_attempts"}
+EQUALITY_CONDITIONS = ("attempts", "poll_seq", "lease_owner", "lease_until")
 
 
 def to_job(row: JobRow) -> Job:
@@ -22,27 +24,43 @@ def to_job(row: JobRow) -> Job:
         provider_job_id=row.provider_job_id, reservation_id=row.reservation_id,
         free_credits_used=row.free_credits_used, watermark=row.watermark,
         cost_usd_estimate=Decimal(row.cost_usd_estimate or 0), cost_usd_actual=row.cost_usd_actual,
+        result_urls=tuple(row.result_urls or ()), result_mime=row.result_mime,
         result_keys=tuple(row.result_keys or ()), result_refs=dict(row.result_refs or {}),
-        error_code=row.error_code, attempts=row.attempts, parent_job_id=row.parent_job_id,
-        template_id=row.template_id, created_at=row.created_at, started_at=row.started_at,
-        finished_at=row.finished_at, deadline_at=row.deadline_at, heartbeat_at=row.heartbeat_at,
+        error_code=row.error_code, attempts=row.attempts, deliver_attempts=row.deliver_attempts,
+        poll_seq=row.poll_seq, lease_until=row.lease_until, lease_owner=row.lease_owner,
+        parent_job_id=row.parent_job_id, template_id=row.template_id, created_at=row.created_at,
+        started_at=row.started_at, finished_at=row.finished_at, deadline_at=row.deadline_at,
     )
 
 
 def _values(fields: dict[str, Any]) -> dict[str, Any]:
     values = {}
     for key, value in fields.items():
-        if key == "attempts_increment":
-            values["attempts"] = JobRow.attempts + value
-        elif key == "status" and isinstance(value, JobStatus):
-            values[key] = value.value
-        elif key == "operation":
+        if key in COUNTERS:
+            column = COUNTERS[key]
+            values[column] = getattr(JobRow, column) + value
+        elif isinstance(value, (JobStatus, Operation)):
             values[key] = value.value
         elif key in TUPLE_FIELDS:
             values[key] = list(value)
         else:
             values[key] = value
     return values
+
+
+def _conditions(conditions: dict[str, Any] | None) -> list:
+    clauses = []
+    for key, value in (conditions or {}).items():
+        if key == "lease_free":
+            # Free = nobody holds it (a scheduled retry/kick releases the owner) or the holder's lease expired.
+            clauses.append(or_(JobRow.lease_owner.is_(None), JobRow.lease_until.is_(None),
+                               JobRow.lease_until < value))
+        elif key in EQUALITY_CONDITIONS:
+            column = getattr(JobRow, key)
+            clauses.append(column.is_(None) if value is None else column == value)
+        else:
+            raise ValueError(f"unsupported condition {key}")
+    return clauses
 
 
 class SqlJobRepository:
@@ -56,9 +74,9 @@ class SqlJobRepository:
             prompt=job.prompt, prompt_original=job.prompt_original, params=job.params, input_keys=list(job.input_keys),
             channel=job.channel, chat_ref=job.chat_ref, provider=job.provider, provider_job_id=job.provider_job_id,
             reservation_id=job.reservation_id, watermark=job.watermark, cost_usd_estimate=job.cost_usd_estimate,
-            result_keys=list(job.result_keys), result_refs=job.result_refs, parent_job_id=job.parent_job_id,
-            template_id=job.template_id, deadline_at=job.deadline_at, heartbeat_at=job.created_at,
-            **({"created_at": job.created_at} if job.created_at else {}),
+            result_urls=list(job.result_urls), result_keys=list(job.result_keys), result_refs=job.result_refs,
+            parent_job_id=job.parent_job_id, template_id=job.template_id, deadline_at=job.deadline_at,
+            lease_until=job.lease_until, **({"created_at": job.created_at} if job.created_at else {}),
         ))
         await self._session.flush()
 
@@ -67,10 +85,10 @@ class SqlJobRepository:
         return to_job(row) if row else None
 
     async def transition(self, job_id: str, expected: tuple[JobStatus, ...], new: JobStatus,
-                         **fields: Any) -> Job | None:
+                         conditions: dict[str, Any] | None = None, **fields: Any) -> Job | None:
         row = await self._session.scalar(
             update(JobRow)
-            .where(JobRow.id == job_id, JobRow.status.in_([s.value for s in expected]))
+            .where(JobRow.id == job_id, JobRow.status.in_([s.value for s in expected]), *_conditions(conditions))
             .values(status=new.value, **_values(fields))
             .returning(JobRow)
             .execution_options(populate_existing=True, synchronize_session=False)
@@ -96,13 +114,13 @@ class SqlJobRepository:
     async def count_active(self, user_id: int) -> int:
         return await self._session.scalar(
             select(func.count()).where(JobRow.user_id == user_id,
-                                       JobRow.status.in_(["queued", "running", "delivering"]))
+                                       JobRow.status.in_([s.value for s in ACTIVE_STATUSES]))
         )
 
-    async def stale(self, status: JobStatus, older_than: datetime) -> list[Job]:
+    async def abandoned(self, now: datetime) -> list[Job]:
         rows = await self._session.scalars(
-            select(JobRow).where(JobRow.status == status.value,
-                                 func.coalesce(JobRow.heartbeat_at, JobRow.created_at) < older_than)
+            select(JobRow).where(JobRow.status.in_([s.value for s in ACTIVE_STATUSES]),
+                                 or_(JobRow.lease_until.is_(None), JobRow.lease_until < now))
             .order_by(JobRow.created_at).limit(200).execution_options(populate_existing=True)
         )
         return [to_job(r) for r in rows]
@@ -118,8 +136,8 @@ class SqlJobRepository:
         """1-based position among jobs still waiting or running ahead of this one (F14)."""
         ahead = await self._session.scalar(
             select(func.count()).where(
-                JobRow.status.in_(["queued", "running"]),
-                and_(JobRow.created_at < job.created_at) if job.created_at else JobRow.id != job.id,
+                JobRow.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
+                JobRow.created_at < job.created_at,
             )
         )
-        return int(ahead) + 1
+        return int(ahead or 0) + 1

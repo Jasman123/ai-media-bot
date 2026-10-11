@@ -70,6 +70,8 @@ class GenerationService:
             watermark=reservation.free_amount > 0, cost_usd_estimate=quote.cost_usd,
             parent_job_id=draft.parent_job_id, template_id=draft.template_id, created_at=now,
             deadline_at=now + timedelta(seconds=self._policy.timeout_s(draft.operation.kind)),
+            # If the enqueue below is lost, the sweeper picks the job up once this lease expires.
+            lease_until=now + timedelta(seconds=self._policy.stuck_after_s),
         )
         await self._jobs.add(job)
         await self._uow.commit()

@@ -61,12 +61,17 @@ async def run_job(ctx: dict, job_id: str, runner: FromDishka[JobRunner]) -> None
 
 
 @inject
-async def poll_job(ctx: dict, job_id: str, runner: FromDishka[JobRunner]) -> None:
+async def poll_job(ctx: dict, job_id: str, seq: int, runner: FromDishka[JobRunner]) -> None:
     try:
-        await runner.poll(job_id)
+        await runner.poll(job_id, seq)
     except Exception:
         await runner.recover(job_id)
         raise
+
+
+@inject
+async def deliver_job(ctx: dict, job_id: str, runner: FromDishka[JobRunner]) -> None:
+    await runner.deliver(job_id)  # failures are retried by the delivery lease logic itself
 
 
 @inject
@@ -89,7 +94,7 @@ async def sweep_jobs(ctx: dict, runner: FromDishka[JobRunner]) -> dict:
 
 FUNCTIONS: dict[str, list[Callable]] = {
     QUEUE_UPDATES: [process_update],
-    QUEUE_JOBS: [run_job, poll_job, apply_provider_status, sweep_jobs, expire_free_credits],
+    QUEUE_JOBS: [run_job, poll_job, deliver_job, apply_provider_status, sweep_jobs, expire_free_credits],
 }
 CRON_JOBS: dict[str, list[CronJob]] = {
     QUEUE_UPDATES: [],

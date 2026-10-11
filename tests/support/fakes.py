@@ -240,20 +240,36 @@ class InMemoryJobRepository:
         self.jobs: dict[str, Any] = {}
 
     async def add(self, job) -> None:
-        self.jobs[job.id] = replace(job, heartbeat_at=job.created_at)
+        self.jobs[job.id] = job
 
     async def get(self, job_id: str):
         return self.jobs.get(job_id)
 
-    def _apply(self, job, fields):
+    @staticmethod
+    def _apply(job, fields):
         fields = dict(fields)
-        if "attempts_increment" in fields:
-            fields["attempts"] = job.attempts + fields.pop("attempts_increment")
+        for counter in ("attempts", "deliver_attempts"):
+            if f"{counter}_increment" in fields:
+                fields[counter] = getattr(job, counter) + fields.pop(f"{counter}_increment")
+        for key in ("input_keys", "result_keys", "result_urls"):
+            if key in fields:
+                fields[key] = tuple(fields[key])
         return replace(job, **fields)
 
-    async def transition(self, job_id, expected, new, **fields):
+    @staticmethod
+    def _matches(job, conditions) -> bool:
+        for key, value in (conditions or {}).items():
+            if key == "lease_free":
+                held = job.lease_owner is not None and job.lease_until is not None and job.lease_until >= value
+                if held:
+                    return False
+            elif getattr(job, key) != value:
+                return False
+        return True
+
+    async def transition(self, job_id, expected, new, conditions=None, **fields):
         job = self.jobs.get(job_id)
-        if job is None or job.status not in expected:
+        if job is None or job.status not in expected or not self._matches(job, conditions):
             return None
         self.jobs[job_id] = self._apply(job, {**fields, "status": new})
         return self.jobs[job_id]
@@ -273,9 +289,11 @@ class InMemoryJobRepository:
 
         return sum(1 for j in self.jobs.values() if j.user_id == user_id and j.status in ACTIVE_STATUSES)
 
-    async def stale(self, status, older_than):
+    async def abandoned(self, now):
+        from app.domain.jobs import ACTIVE_STATUSES
+
         return [j for j in self.jobs.values()
-                if j.status == status and (j.heartbeat_at or j.created_at) < older_than]
+                if j.status in ACTIVE_STATUSES and (j.lease_until is None or j.lease_until < now)]
 
     async def overdue(self, now):
         from app.domain.jobs import FAILABLE_STATUSES
@@ -308,17 +326,30 @@ class InMemoryStorage:
 
 
 class RecordingChannel:
-    def __init__(self, error: Exception | None = None) -> None:
+    """DeliveryChannel fake: one step per file. `error` is raised before the first unsent step; with
+    `fail_after` it is raised after that many new steps (a partial delivery)."""
+
+    def __init__(self, error: Exception | None = None, fail_after: int | None = None) -> None:
         self.delivered: list[tuple[Any, list]] = []
+        self.sent_steps: list[str] = []
         self.failures: list[tuple[Any, Any, bool]] = []
         self.progress_updates: list[tuple[Any, Any]] = []
         self.error = error
+        self.fail_after = fail_after
 
-    async def deliver(self, job, files):
-        if self.error is not None:
-            raise self.error
+    async def deliver(self, job, files, progress):
+        new_steps = 0
+        for index, _ in enumerate(files):
+            step = f"file:{index}"
+            if progress.is_done(step):
+                continue
+            if self.error is not None and (self.fail_after is None or new_steps >= self.fail_after):
+                raise self.error
+            await progress.mark_done(step, {"file_ids": [f"fid-{index}"]})
+            self.sent_steps.append(step)
+            new_steps += 1
         self.delivered.append((job, files))
-        return {"file_ids": [f"fid-{i}" for i, _ in enumerate(files)]}
+        return {"file_ids": [fid for refs in progress.refs().values() for fid in refs["file_ids"]]}
 
     async def failed(self, job, reason, refunded) -> None:
         self.failures.append((job, reason, refunded))
