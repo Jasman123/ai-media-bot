@@ -12,7 +12,7 @@ from ..models import JobRow
 
 TUPLE_FIELDS = ("input_keys", "result_keys", "result_urls")
 COUNTERS = {"attempts_increment": "attempts", "deliver_attempts_increment": "deliver_attempts"}
-EQUALITY_CONDITIONS = ("attempts", "poll_seq", "lease_owner", "lease_until")
+EQUALITY_CONDITIONS = ("attempts", "poll_seq", "lease_owner", "lease_until", "provider_job_id")
 
 
 def to_job(row: JobRow) -> Job:

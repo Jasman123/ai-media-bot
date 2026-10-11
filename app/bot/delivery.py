@@ -36,7 +36,8 @@ def classify(exc: TelegramError) -> Exception:
     """Map a Bot API error onto the delivery outcomes the core understands."""
     if exc.error_code == 403 or any(marker in exc.description.lower() for marker in UNREACHABLE):
         return ChannelUnreachable(str(exc))
-    if exc.error_code == 429 or exc.error_code == 0 or exc.error_code >= 500:
+    if exc.error_code in (0, 401, 404, 409, 429) or exc.error_code >= 500:
+        # Rate limits, outages and bot-level problems (revoked token, webhook conflict) are not the content's fault.
         return DeliveryRetry(str(exc), retry_after_s=exc.retry_after)
     return DeliveryRejected(str(exc))
 
@@ -80,8 +81,14 @@ class TelegramDelivery:
                         if len(chunk) == 1:
                             sent = [await self._send_one(chat_id, chunk[0], None, None)]
                         else:
-                            sent = await self._tg.send_media_group(
-                                chat_id, [(media_type, InputFile(f.filename, f.content, f.mime)) for f in chunk])
+                            try:
+                                sent = await self._tg.send_media_group(
+                                    chat_id, [(media_type, InputFile(f.filename, f.content, f.mime)) for f in chunk])
+                            except TelegramError as exc:
+                                if not isinstance(classify(exc), DeliveryRejected):
+                                    raise
+                                logger.info("Album rejected (%s); sending files one by one", exc.description)
+                                sent = [await self._send_one(chat_id, f, None, None) for f in chunk]
                         await progress.mark_done(step, {"file_ids": [i for i in map(_file_id, sent) if i]})
                 if not progress.is_done("caption"):
                     await self._tg.send_message(chat_id, caption, reply_markup=markup)

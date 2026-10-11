@@ -190,3 +190,24 @@ async def test_s3_storage_with_stubbed_client():
     url = await storage.url("k.png", 60)
     assert url.startswith("https://acct.r2.cloudflarestorage.com/media/k.png?") and "Expires=" in url \
         or "X-Amz-Expires=60" in url
+
+
+async def test_rejected_album_falls_back_to_single_files(delivery):
+    """N3."""
+    channel, fake = delivery
+    fake.fail_next("sendMediaGroup", 400, "Bad Request: PHOTO_INVALID_DIMENSIONS")
+    progress = MemoryProgress()
+    refs = await channel.deliver(JOB, [png(), png()], progress)
+    assert len(fake.sent("sendPhoto", 42)) == 2 and len(refs["file_ids"]) == 2
+    assert "caption" in progress.steps
+
+
+@pytest.mark.parametrize("code", [401, 404, 409])
+async def test_bot_level_errors_are_retried_not_refunded(delivery, code):
+    """N5: a revoked token or webhook conflict must not refund every finished job."""
+    from app.domain.jobs import DeliveryRetry
+
+    channel, fake = delivery
+    fake.fail_next("sendPhoto", code, "Unauthorized")
+    with pytest.raises(DeliveryRetry):
+        await channel.deliver(JOB, [png()], MemoryProgress())

@@ -156,7 +156,7 @@ class JobRunner:
             claimed = await self._jobs.transition(
                 job.id, (JobStatus.RUNNING,), JobStatus.RUNNING, conditions={"attempts": job.attempts},
                 provider=model.provider, provider_job_id=submitted.provider_job_id, model_id=model.id,
-                cost_usd_estimate=self._catalog.cost(model, req), poll_seq=0,
+                cost_usd_estimate=self._catalog.cost(model, req), poll_seq=job.poll_seq + 1,
                 lease_until=self._lease(self._policy.poll_s(job.kind)),
             )
             await self._uow.commit()
@@ -190,10 +190,14 @@ class JobRunner:
             n=int(p.get("n", 1)), seed=p.get("seed"), webhook_url=webhook,
         )
 
-    async def _requeue(self, job: Job, delay_s: float | None) -> bool:
+    async def _requeue(self, job: Job, delay_s: float | None, from_sweeper: bool = False) -> bool:
         delay = max(delay_s or 0.0, 1.0 * job.attempts)
+        conditions: dict[str, Any] = {"attempts": job.attempts, "provider_job_id": None}
+        if from_sweeper:
+            # Only if nothing changed since the sweeper's snapshot (a submit may have just landed).
+            conditions["lease_until"] = job.lease_until
         requeued = await self._jobs.transition(job.id, (JobStatus.RUNNING,), JobStatus.QUEUED,
-                                               conditions={"attempts": job.attempts}, lease_until=self._lease(delay))
+                                               conditions=conditions, lease_until=self._lease(delay))
         await self._uow.commit()
         if requeued:
             await self._queue.enqueue(RUN_JOB, job.id, queue=QUEUE_JOBS, job_id=f"run:{job.id}:{job.attempts}",
@@ -265,8 +269,17 @@ class JobRunner:
             logger.warning("Progress update failed", extra={"job_id": job.id}, exc_info=True)
 
     async def timeout(self, job: Job) -> None:
-        await self._cancel_quietly(job.provider, job.provider_job_id)
-        await self.fail(job, FailureReason.TIMEOUT)
+        """Deadline passed. One last status check (it may have finished just now), then refund and cancel."""
+        if job.status == JobStatus.RUNNING and job.provider and job.provider_job_id:
+            try:
+                status = await self._registry.get(job.provider).status(job.provider_job_id)
+            except Exception:
+                status = None
+            if status is not None and status.state == ProviderState.COMPLETED:
+                await self.apply_status(job.id, status)
+                return
+        if await self.fail(job, FailureReason.TIMEOUT):
+            await self._cancel_quietly(job.provider, job.provider_job_id)
 
     # ================================================================== results
     async def apply_status(self, job_id: str, status: ProviderStatus) -> None:
@@ -339,14 +352,19 @@ class JobRunner:
         provider = None
         for index, url in enumerate(job.result_urls):
             key = f"results/{job.id}/{index}{ext}"
+            content = None
             if key in keys:
-                content = await self._storage.get(key)
-            else:
+                try:
+                    content = await self._storage.get(key)
+                except Exception:
+                    logger.warning("Stored result %s missing; fetching again", key, extra={"job_id": job.id})
+            if content is None:
                 provider = provider or self._registry.get(job.provider)
                 content, fetched_mime = await provider.fetch(url, self._policy.max_result_bytes)
                 await self._storage.put(key, content, fetched_mime or mime)
-                keys.append(key)
-                job = await self._fenced(job, owner, result_keys=tuple(keys))
+                if key not in keys:
+                    keys.append(key)
+                    job = await self._fenced(job, owner, result_keys=tuple(keys))
             files.append(MediaFile(content=content, mime=mime, filename=f"{job.id[:8]}-{index}{ext}",
                                    storage_key=key))
         return files
@@ -371,7 +389,8 @@ class JobRunner:
         await self._uow.rollback()
         released = await self._jobs.transition(job.id, (JobStatus.DELIVERING,), JobStatus.DELIVERING,
                                                conditions={"lease_owner": owner}, lease_owner=None,
-                                               lease_until=self._lease(delay))
+                                               lease_until=self._lease(delay),
+                                               result_refs={**job.result_refs, "steps": progress.steps})
         await self._uow.commit()
         logger.warning("Delivery failed (%s); retry %s in %.0fs", exc, job.deliver_attempts, delay,
                        extra={"job_id": job.id})
@@ -404,7 +423,7 @@ class JobRunner:
             await self._notify_failure(refunded, reason, refunded=job.credits_charged > 0)
 
     # ================================================================== failure
-    async def fail(self, job: Job, reason: FailureReason, notify: bool = True) -> None:
+    async def fail(self, job: Job, reason: FailureReason, notify: bool = True) -> bool:
         """Queued/running job failed: release the reservation (auto-refund, F11), tell the user. First caller wins."""
         refunded = job.reservation_id is not None and job.credits_charged > 0
         updated = await self._jobs.transition(
@@ -412,12 +431,13 @@ class JobRunner:
             error_code=reason.value, finished_at=self._clock.now(), lease_until=None,
         )
         if updated is None:
-            return
+            return False
         if refunded:
             await self._release(job)
         await self._uow.commit()
         if notify:
             await self._notify_failure(updated, reason, refunded)
+        return True
 
     async def _capture(self, job: Job) -> None:
         if job.reservation_id:
@@ -458,7 +478,7 @@ class JobRunner:
             elif job.status == JobStatus.RUNNING and job.provider_job_id:
                 await self._isolated(counts, "polled", self.revive_polling(job))
             elif job.status == JobStatus.RUNNING:
-                await self._isolated(counts, "requeued", self._requeue(job, None))
+                await self._isolated(counts, "requeued", self._requeue(job, None, from_sweeper=True))
             elif job.status == JobStatus.DELIVERING:
                 await self._isolated(counts, "redelivered", self._kick_delivery(job, now))
         return counts

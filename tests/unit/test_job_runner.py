@@ -455,3 +455,63 @@ async def test_quote_matches_create_and_queue_position():
     assert await p.generation.queue_position(second) == 2
     updated = await p.generation.set_chat_ref(first.id, progress_message_id=55)
     assert updated.chat_ref == {"chat_id": 7, "progress_message_id": 55}
+
+
+# ---------------------------------------------------------------------------- re-review regressions (N1–N5)
+async def test_sweeper_does_not_requeue_a_job_whose_submit_just_landed():
+    """N1: the sweeper's snapshot shows no provider job, but run() records one before the requeue."""
+    p = await build_pipeline(delay_polls=100)
+    await p.fund(paid=100)
+    job = await p.generation.create(1, VIDEO)
+    p.queue.jobs.clear()
+    await p.runner.run(job.id)
+    landed = await p.jobs.get(job.id)
+    stale_snapshot = replace(landed, provider_job_id=None, lease_until=job.lease_until)
+    assert await p.runner._requeue(stale_snapshot, None, from_sweeper=True) is False
+    assert (await p.jobs.get(job.id)).status == JobStatus.RUNNING
+    assert landed.poll_seq >= 1  # poll ids never reuse poll:{id}:0 from an earlier attempt
+
+
+async def test_missing_stored_copy_is_fetched_again():
+    """N2: result_keys says it's stored, but the object is gone (e.g. a redeploy without a volume)."""
+    from app.domain.jobs import DeliveryRetry
+
+    p = await build_pipeline(channel=RecordingChannel(error=DeliveryRetry("502")))
+    await p.fund(paid=10)
+    job = await p.generation.create(1, IMAGE)
+    p.queue.jobs.clear()
+    await p.runner.run(job.id)
+    stored = (await p.jobs.get(job.id)).result_keys[0]
+    p.storage.objects.clear()
+    p.channel.error = None
+    await p.drain()
+    assert (await p.jobs.get(job.id)).status == JobStatus.DELIVERED
+    assert stored in p.storage.objects
+
+
+async def test_timeout_delivers_if_provider_finished_at_the_last_moment():
+    """N4: one final status check before refunding at the deadline."""
+    p = await build_pipeline(delay_polls=2)
+    await p.fund(paid=100)
+    job = await p.generation.create(1, VIDEO)
+    p.queue.jobs.clear()
+    await p.runner.run(job.id)
+    running = await p.jobs.get(job.id)
+    p.provider._jobs[running.provider_job_id].polls = 5  # provider is done
+    p.clock.advance(seconds=p.policy.video_timeout_s + 1)
+    await p.runner.timeout(running)
+    assert (await p.jobs.get(job.id)).status == JobStatus.DELIVERED
+
+
+async def test_stale_timeout_does_not_cancel_a_job_already_delivering():
+    """N4: a stale overdue snapshot loses the fail transition and must not cancel the provider job."""
+    p = await build_pipeline(delay_polls=100)
+    await p.fund(paid=100)
+    job = await p.generation.create(1, VIDEO)
+    p.queue.jobs.clear()
+    await p.runner.run(job.id)
+    snapshot = await p.jobs.get(job.id)
+    await p.jobs.transition(job.id, (JobStatus.RUNNING,), JobStatus.DELIVERING)
+    await p.runner.timeout(replace(snapshot, status=JobStatus.QUEUED))
+    assert not p.provider._jobs[snapshot.provider_job_id].cancelled
+    assert (await p.jobs.get(job.id)).status == JobStatus.DELIVERING
