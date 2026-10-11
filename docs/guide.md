@@ -33,7 +33,26 @@ The webhook only validates, dedupes and enqueues; **nothing is handled unless an
 - `tests/integration/test_db_queue.py::test_migrations_match_models` fails if models and migrations drift.
 - New revision: edit models, then `alembic revision --autogenerate -m "..."` against a dev DB and review it.
 
-## 3. Configuration
+## 3. Where code goes (adding a feature)
+
+Follow the layers in [specification.md §1](specification.md#1-architecture); `tests/unit/test_architecture.py`
+fails the build on a wrong import.
+
+1. **Domain** (`app/domain/<area>.py`): entities as frozen dataclasses, domain errors, and a `Protocol` for each
+   repository or external system the feature needs.
+2. **Infra** (`app/infra/`): ORM table in `models/`, SQL repository in `repositories/` returning domain entities,
+   other adapters (HTTP clients, storage) implementing the ports. Add the Alembic revision.
+3. **Service** (`app/services/<area>.py`): the use case. All collaborators via `__init__`, typed as ports. Commit
+   through the injected `UnitOfWork`.
+4. **Wire it** in `app/di.py`: `provide(SqlThingRepository, provides=ThingRepository)` in the REQUEST scope,
+   `provide(ThingService, scope=Scope.REQUEST)`.
+5. **Interface**: a handler module in `app/bot/handlers/` with its own `Router`, included in `build_router()`.
+   Handlers take services as typed parameters: `async def handler(ctx: Ctx, things: ThingService)`.
+   Screens (text + keyboard) go in `app/bot/views.py`; strings in both `app/i18n/*.yaml`.
+6. **Tests**: unit tests construct the service with fakes from `tests/support/fakes.py`; integration tests hit
+   the real repository; e2e tests drive the bot through `stack.user(...)`.
+
+## 4. Configuration
 
 All settings come from environment variables (or `.env`), see [app/config.py](../app/config.py).
 
@@ -52,7 +71,7 @@ All settings come from environment variables (or `.env`), see [app/config.py](..
 | `DB_POOL_SIZE` | `10` | |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | JSON logs for production. `httpx` is pinned to WARNING (C7). |
 
-## 4. Testing
+## 5. Testing
 
 Four layers, selected by directory and marker:
 
@@ -76,6 +95,9 @@ Test helpers in `tests/support/`:
 - `fake_telegram.py` — in-memory Bot API (records calls, parses multipart, serves files).
 - `updates.py` — builders for real-shaped Telegram updates.
 - `live_server.py` — serves an ASGI app (or the fake Bot API) on a real localhost port.
+- `fakes.py` — in-memory implementations of every domain port, for service unit tests.
+- `di.py` — `make_test_container(settings, telegram, *providers, engine=, redis=)` and `ValueProvider({Port: fake})`
+  to override any binding while keeping the production wiring for everything else.
 - `stack.py` — `stack` fixture: real app + Postgres + Redis/ARQ + fake Telegram. `stack.user(id)` gives a
   `BotUser` with `send(text)`, `press(callback_data)`, `press_button(text)`, `photo()`; each call posts a
   webhook update and drains the queues with burst workers (`drain()` raises if any job failed).
@@ -83,15 +105,16 @@ Test helpers in `tests/support/`:
 Each test session creates its own database (`aimb_test_<random>`) and migrates it with Alembic; every
 integration/e2e test starts from truncated tables and an empty Redis db.
 
-## 5. Branching workflow
+## 6. Branching workflow
 
 - `epic/v1` is the integration branch for the build. Each feature gets `feat/<id>-<slug>` from `epic/v1`.
 - A feature merges back (`--no-ff`) only when `scripts/test.sh` is green (lint + all four layers).
 - After each merge, this guide and the specification are updated.
 
-## 6. Changelog (merged features)
+## 7. Changelog (merged features)
 
 | Branch | Plan items | Summary |
 |---|---|---|
 | `feat/p0-foundation` | C1, C2, C4, C7, C8 | Shared Telegram client (multipart, keyboards-ready, errors without token), `pre_checkout_query` in allowed updates, no update dropping by default, token-redacting logs, app factory + DI container, four-layer test harness. |
 | `feat/p0-db-router-i18n` | C3, C5, C6, F15 | Postgres + Alembic, user model, ARQ `updates` queue behind the webhook (dedupe, 503 on queue failure), router (commands / callbacks / wizard states / media / payments), ID+EN catalogs with language picker, worker entrypoint, subprocess smoke tests. |
+| `refactor/p0-layers-di` | (structure) | Layered architecture (domain / services / infra / bot+api) with dishka DI: typed handler dependencies, APP/REQUEST scopes, composition root, architecture test. Review fixes: secret checked before DI resolution, fail-fast startup, no update loss on partial Redis failure, graceful worker shutdown. |

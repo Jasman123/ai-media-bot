@@ -5,29 +5,88 @@ How to run and test: [guide.md](guide.md).
 
 ## 1. Architecture
 
+### 1.1 Layers
+
 ```
-Telegram ──webhook──► FastAPI ──dedupe (Redis)──► ARQ queue "aimb:updates" ──► worker: router.dispatch
-                                                                                   │
-                                                              Postgres (users) ◄───┤
-                                                              Redis (wizard state)◄┘
+            ┌──────────────────────── interfaces ────────────────────────┐
+            │  app/bot  (Telegram: router, dispatcher, handlers, views)   │
+            │  app/api  (FastAPI: webhook, admin)                          │
+            └───────────────┬─────────────────────────────────────────────┘
+                            │ calls (injected by type)
+            ┌───────────────▼──────────────┐
+            │  app/services  (use cases)   │  owns transactions (UnitOfWork.commit)
+            └───────────────┬──────────────┘
+                            │ depends on ports only
+            ┌───────────────▼──────────────┐        implements        ┌──────────────────────────────┐
+            │  app/domain  (entities,      │ ◄──────────────────────── │  app/infra  (SQL repos, ORM, │
+            │  errors, ports = Protocols)  │                           │  Redis, ARQ, Telegram client)│
+            └──────────────────────────────┘                           └──────────────────────────────┘
+                     app/di.py = composition root (binds ports → adapters); main.py / worker.py = entrypoints
 ```
 
-Queues (`app/queue.py`): `aimb:updates` (Telegram updates, user-facing) and `aimb:jobs` (generation, delivery,
-cron). One worker process per queue: `python -m app.worker updates|jobs`.
+| Layer | May import | Must not import |
+|---|---|---|
+| `app.domain` | `app.domain` | any framework, any other layer |
+| `app.services` | `app.domain`, `app.services` | infra, bot, api, frameworks |
+| `app.infra` | `app.domain`, `app.infra` | services, bot, api, FastAPI, dishka |
+| `app.i18n` | `app.domain` | frameworks |
+| `app.bot` | domain, services, i18n, `app.infra.telegram`, dishka | repositories, ORM, SQLAlchemy, Redis |
+| `app.api` | domain, services, config, `app.infra.telegram` | repositories, ORM, SQLAlchemy, Redis |
 
-- **App factory** `app.main.create_app(container=None)`. With no container, the lifespan builds one from
-  settings at startup (so importing `app.main` never needs env vars). Tests pass a prebuilt container.
-- **Container** (`app/container.py`): process-wide dependencies shared by API and worker. Grows feature by
-  feature; tests swap in fakes instead of patching globals.
+Enforced by `tests/unit/test_architecture.py` (AST import scan) on every test run.
+
+Rules of thumb:
+- **Handlers and endpoints are thin**: parse input → call one service → render. No SQL, no business rules.
+- **Services** take every collaborator through `__init__`, typed against a domain port, and decide when to commit.
+- **Repositories** never commit and return domain entities; ORM rows (`*Row`) never leave `app.infra`.
+- **Configuration** reaches infra/services as constructor arguments built in `app/di.py`; they don't read settings.
+
+### 1.2 Dependency injection (`app/di.py`, dishka)
+
+| Scope | Lifetime | Provides |
+|---|---|---|
+| `APP` | process | `Settings`, `AsyncEngine`, `async_sessionmaker`, `ArqRedis`, `TelegramClient`, `I18n`, `Clock`, `TaskQueue`, `WizardState`, `UpdateDeduper`, `UpdateIntake`, `Router`, `BotConfig` |
+| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `Dispatcher` |
+
+- **Bot handlers** declare dependencies as typed parameters; the `Dispatcher` resolves them from the job's REQUEST
+  container. All objects in one update share one DB session:
+  ```python
+  @router.callback("lang")
+  async def choose_language(ctx: Ctx, users: UserService) -> None:
+      ctx.with_user(await users.choose_language(ctx.user.id, ctx.args[0]))
+  ```
+- **FastAPI**: `setup_dishka` middleware opens a REQUEST scope per request; endpoints take `FromDishka[T]`.
+- **ARQ**: `setup_dishka(container, worker)` opens/closes a REQUEST scope per job; tasks use `@inject` +
+  `FromDishka[T]`.
+- `make_container()` validates the whole graph at import; `warm_up()` connects Postgres/Redis at startup so a
+  missing dependency fails the process, not a request.
+- **Tests** call `make_container(*overrides)`; later providers override earlier ones
+  (`tests/support/di.py: TestOverrides, ValueProvider`). Unit tests skip DI and construct services with the
+  in-memory fakes in `tests/support/fakes.py`.
+
+### 1.3 Runtime
+
+```
+Telegram ──webhook──► FastAPI ──UpdateIntake──► ARQ "aimb:updates" ──► worker: Dispatcher ──► handler(ctx, services…)
+                                                                                                │
+                                                                         Postgres ◄── repositories
+                                                                         Redis    ◄── wizard state
+```
+
+Queues (`app/domain/tasks.py`): `aimb:updates` (Telegram updates, user-facing) and `aimb:jobs` (generation,
+delivery, cron). One worker process per queue: `python -m app.worker updates|jobs`.
 
 ## 2. Update pipeline
 
-1. `POST /webhook/telegram` checks the secret (403), requires an integer `update_id` (400).
-2. `UpdateDeduper.first_seen(update_id)` — Redis `SET NX` with 48 h TTL. Duplicates answer
+1. `POST /webhook/telegram`: the secret is checked in a dependency **before** any DI resolution (403);
+   the body needs an integer `update_id` (400).
+2. `UpdateIntake.accept`: `UpdateDeduper.seen(id)` → if new, enqueue `process_update(update)` with job id
+   `upd:<update_id>` (ARQ collapses concurrent duplicates) → only then `mark(id)` (48 h TTL). Duplicates answer
    `{"ok": true, "duplicate": true}`.
-3. Enqueue `process_update(update)` with job id `upd:<update_id>`. If enqueueing fails, the dedupe key is
-   released and the endpoint answers **503**, so Telegram redelivers instead of the update being lost (C3).
-4. The worker upserts the sender (`get_or_create_user`, race-safe `INSERT … ON CONFLICT`) and routes.
+3. Any Redis/queue failure before the enqueue succeeds → **503**, and no marker is left behind, so Telegram's
+   redelivery is processed (C3). A failing `mark()` after a successful enqueue is only logged.
+4. The worker's `Dispatcher` registers the sender via `UserService.register_seen` (race-safe
+   `INSERT … ON CONFLICT`) and routes.
    `TelegramError` with `retry_after` → ARQ `Retry` (max 3 tries). Other handler exceptions are logged and the
    user gets `errors.generic`.
 
@@ -47,9 +106,9 @@ cron). One worker process per queue: `python -m app.worker updates|jobs`.
 
 Banned users: callbacks get an alert, private messages get `errors.banned`, nothing else runs.
 
-### Wizard state (`app/state.py`)
+### Wizard state (port `WizardState`, adapter `app/infra/state.py`)
 
-- `StateStore`: `aimb:st:<user_id>` → `{"step": str|null, "data": {...}}`, 1 h TTL.
+- `RedisWizardState`: `aimb:st:<user_id>` → `{"step": str|null, "data": {...}}`, 1 h TTL.
 - `put_payload(dict) -> id` / `get_payload(id)`: server-side payloads for buttons (`callback_data` ≤ 64 bytes),
   7-day TTL.
 - `keyboards.cb(*parts)` builds callback data and raises if it exceeds 64 bytes.
@@ -70,9 +129,9 @@ when the webhook is registered.
 
 | Table | Columns (key ones) | Notes |
 |---|---|---|
-| `users` | `id`, `telegram_id` (unique), `kind` (`user`/`group`), `username?`, `language` (`id` default), `language_chosen`, `is_banned`, `ban_reason?`, `created_at`, `last_seen_at` | PDP-minimal: no names or phone numbers |
+| `users` (`UserRow` → domain `User`) | `id`, `telegram_id` (unique), `kind` (`user`/`group`), `username?`, `language` (`id` default), `language_chosen`, `is_banned`, `ban_reason?`, `created_at`, `last_seen_at` | PDP-minimal: no names or phone numbers |
 
-## 4. Telegram client (`app/telegram.py`)
+## 4. Telegram client (`app/infra/telegram.py`)
 
 - One shared `httpx.AsyncClient` per process, 60 s timeout, pooled connections (C4).
 - `call()` for JSON methods; `call_multipart()` for uploads (`InputFile`); dict/list params are JSON-encoded.
