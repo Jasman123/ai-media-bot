@@ -1,0 +1,59 @@
+lang:
+  name: "English"
+  pick: "Pilih bahasa / Choose your language:"
+  set: "✅ Language set to English."
+  btn_id: "🇮🇩 Bahasa Indonesia"
+  btn_en: "🇬🇧 English"
+
+start:
+  welcome: |
+    Hi! 👋 I turn your text or photos into <b>images</b> and <b>videos</b>, right inside Telegram.
+
+    • Write your idea in Indonesian or English; I'll polish it into a prompt.
+    • The credit cost is always shown <b>before</b> you create.
+    • Failed? Your credits come back automatically.
+
+menu:
+  title: "What would you like to create today?"
+  image: "🖼 Create Image"
+  video: "🎬 Create Video"
+  animate: "📸 Animate a Photo"
+  templates: "✨ Templates"
+  credits: "💰 Credits"
+  creations: "📂 My Creations"
+  settings: "⚙️ Settings"
+  help: "❓ Help"
+  back: "⬅️ Menu"
+
+common:
+  coming_soon: "This feature is coming soon."
+  cancel: "✖️ Cancel"
+  cancelled: "Cancelled. Type /menu to start again."
+  expired: "This session has expired. Please start again from /menu."
+
+errors:
+  generic: "Sorry, something went wrong on our side. Please try again shortly."
+  banned: "Your account is blocked from this service. Contact /support if you think this is a mistake."
+  unknown_command: "Unknown command. Type /menu to see the options."
+  text_hint: "First pick what you want to create from the menu below."
+  photo_hint: "Photo received. First pick what you want to do from the menu."
+
+help:
+  text: |
+    <b>Help</b>
+
+    /menu — main menu
+    /settings — settings and language
+    /help — this help
+
+    How it works: pick what to create, describe your idea, check the credit cost, then create. Video always asks you to confirm the cost first.
+
+settings:
+  title: "⚙️ <b>Settings</b>"
+  language: "🌐 Language: {language}"
+
+commands:
+  start: "Start"
+  menu: "Main menu"
+  help: "Help"
+  settings: "Settings"

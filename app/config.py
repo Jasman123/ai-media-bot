@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # Admin / REST API
     api_key: str
 
+    # Storage of state
+    database_url: str = "postgresql+asyncpg://aimb:aimb@localhost:5432/aimb"
+    redis_url: str = "redis://localhost:6379/0"
+    db_pool_size: int = 10
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False

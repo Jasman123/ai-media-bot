@@ -3,7 +3,6 @@
 import httpx
 import pytest
 
-from app.handlers import handle_update
 from app.telegram import TelegramClient, TelegramError
 from tests.conftest import load_fixture
 from tests.support.fake_telegram import TEST_TOKEN
@@ -35,12 +34,14 @@ async def test_recorded_not_modified_is_not_an_error():
     ["update_start.json", "update_text.json", "update_photo.json", "update_callback.json",
      "update_pre_checkout.json", "update_successful_payment.json"],
 )
-async def test_every_recorded_update_is_handled_without_crashing(container, fake_tg, fixture_name, caplog):
+async def test_every_recorded_update_is_processed_through_the_queue(stack, fixture_name, caplog):
     update = load_fixture("telegram", fixture_name)
-    await handle_update(container, update)
-    assert "Failed to handle update" not in caplog.text
+    await stack.send_update(update)  # drain() raises if the worker job failed
+    assert "Handler failed" not in caplog.text
 
 
-async def test_recorded_start_gets_a_reply(container, fake_tg):
-    await handle_update(container, load_fixture("telegram", "update_start.json"))
-    assert fake_tg.last("sendMessage").chat_id == 7001001
+async def test_recorded_start_asks_new_user_for_language(stack):
+    await stack.send_update(load_fixture("telegram", "update_start.json"))
+    call = stack.tg.last("sendMessage", 7001001)
+    assert "Pilih bahasa" in call.text
+    assert call.callback_data() == ["lang:id", "lang:en"]
