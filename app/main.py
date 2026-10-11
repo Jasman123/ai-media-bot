@@ -11,13 +11,21 @@ from .routers import api, webhook
 logger = logging.getLogger(__name__)
 
 
+async def register_commands(ctx: Container) -> None:
+    from .bot import BOT_COMMANDS
+
+    for lang in ("id", "en"):
+        commands = [{"command": c, "description": ctx.i18n.t(lang, f"commands.{c}")} for c in BOT_COMMANDS]
+        await ctx.telegram.set_my_commands(commands, language_code=None if lang == "id" else lang)
+
+
 def create_app(container: Container | None = None) -> FastAPI:
     """App factory. Pass a prebuilt container in tests; production builds one from settings."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owned = container is None
-        ctx = container or build_container(get_settings())
+        ctx = container or await build_container(get_settings())
         if owned:
             configure_logging(ctx.settings.log_level, ctx.settings.log_json)
         app.state.container = ctx
@@ -28,7 +36,8 @@ def create_app(container: Container | None = None) -> FastAPI:
                 settings.webhook_secret,
                 drop_pending_updates=settings.drop_pending_updates,
             )
-            logger.info("Webhook registered")
+            await register_commands(ctx)
+            logger.info("Webhook and commands registered")
         try:
             yield
         finally:

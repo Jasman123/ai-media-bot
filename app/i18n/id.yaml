@@ -1,0 +1,59 @@
+lang:
+  name: "Bahasa Indonesia"
+  pick: "Pilih bahasa / Choose your language:"
+  set: "✅ Bahasa diatur ke Bahasa Indonesia."
+  btn_id: "🇮🇩 Bahasa Indonesia"
+  btn_en: "🇬🇧 English"
+
+start:
+  welcome: |
+    Halo! 👋 Saya bantu kamu membuat <b>gambar</b> dan <b>video</b> dari teks atau foto, langsung di Telegram.
+
+    • Ketik ide kamu dalam Bahasa Indonesia, saya rapikan jadi prompt.
+    • Biaya kredit selalu ditampilkan <b>sebelum</b> kamu membuat.
+    • Gagal? Kredit kembali otomatis.
+
+menu:
+  title: "Mau buat apa hari ini?"
+  image: "🖼 Buat Gambar"
+  video: "🎬 Buat Video"
+  animate: "📸 Animasikan Foto"
+  templates: "✨ Template"
+  credits: "💰 Kredit"
+  creations: "📂 Karya Saya"
+  settings: "⚙️ Pengaturan"
+  help: "❓ Bantuan"
+  back: "⬅️ Menu"
+
+common:
+  coming_soon: "Fitur ini segera hadir."
+  cancel: "✖️ Batal"
+  cancelled: "Dibatalkan. Ketik /menu untuk mulai lagi."
+  expired: "Sesi ini sudah kedaluwarsa. Silakan mulai lagi dari /menu."
+
+errors:
+  generic: "Maaf, terjadi kesalahan di sistem kami. Coba lagi sebentar lagi."
+  banned: "Akun kamu diblokir dari layanan ini. Hubungi /support jika menurutmu ini keliru."
+  unknown_command: "Perintah tidak dikenal. Ketik /menu untuk melihat pilihan."
+  text_hint: "Pilih dulu yang ingin kamu buat dari menu di bawah ini."
+  photo_hint: "Foto diterima. Pilih dulu yang ingin kamu lakukan dari menu."
+
+help:
+  text: |
+    <b>Bantuan</b>
+
+    /menu — menu utama
+    /settings — pengaturan dan bahasa
+    /help — bantuan ini
+
+    Cara pakai: pilih jenis karya, tulis ide kamu, cek biaya kredit, lalu buat. Video selalu minta konfirmasi biaya dulu.
+
+settings:
+  title: "⚙️ <b>Pengaturan</b>"
+  language: "🌐 Bahasa: {language}"
+
+commands:
+  start: "Mulai"
+  menu: "Menu utama"
+  help: "Bantuan"
+  settings: "Pengaturan"
