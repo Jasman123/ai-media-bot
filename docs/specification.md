@@ -46,7 +46,7 @@ Rules of thumb:
 | Scope | Lifetime | Provides |
 |---|---|---|
 | `APP` | process | `Settings`, `AsyncEngine`, `async_sessionmaker`, `ArqRedis`, `TelegramClient`, `I18n`, `Clock`, `TaskQueue`, `WizardState`, `UpdateDeduper`, `UpdateIntake`, `ProviderRegistry` (+ adapters), `PricingPolicy`, `CatalogSeed`, `Router`, `BotConfig` |
-| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `CatalogService`, `LedgerService`, `Dispatcher` |
+| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `CatalogService`, `LedgerService`, `GenerationService`, `JobRunner`, `ProviderWebhookIntake`, `Dispatcher` |
 
 - **Bot handlers** declare dependencies as typed parameters; the `Dispatcher` resolves them from the job's REQUEST
   container. All objects in one update share one DB session:
@@ -176,6 +176,51 @@ when the webhook is registered.
   grants). Applied lazily on reserve/summary and by the daily cron `expire_free_credits` (17:05 UTC = 00:05 WIB).
 - Services accept `commit=False` so a caller can compose a ledger change with its own writes in one transaction.
 
+### 3.3 Generation jobs (`jobs`)
+
+Key columns: `id`, `user_id`, `operation`, `tier`, `model_id` (model actually used), `status`, `credits_charged`,
+`free_credits_used`, `watermark`, `reservation_id`, `prompt`, `params`, `input_keys`, `chat_ref` (channel-opaque),
+`provider`, `provider_job_id`, `cost_usd_estimate/actual`, `result_urls`, `result_mime`, `result_keys`,
+`result_refs` (incl. delivery `steps`), `attempts`, `deliver_attempts`, `poll_seq`, `lease_until`, `lease_owner`,
+`deadline_at`, timestamps.
+
+## 3b. Job pipeline (Phase 0)
+
+```
+GenerationService.create ── quote (tier primary) ── reserve credits ── insert job ── commit ── enqueue run_job
+run_job      queued→running (attempts+1) → submit along the fallback chain → record provider job (attempt-fenced)
+poll_job     poll_seq compare-and-set → status → progress edit / next poll / terminal
+provider webhook → apply_provider_status
+apply_status completed → running→delivering (result URLs recorded = outbox); failed/empty → refund
+deliver_job  claim delivery lease → copy results to storage → send in recorded steps → delivering→delivered + capture
+sweep_jobs   (cron, every minute) expired leases: kick queued, requeue lost submits, revive dead poll chains,
+             re-deliver stalled deliveries; overdue queued/running → final status check → refund + cancel
+```
+
+Invariants (tested in `tests/unit/test_job_runner.py`, `tests/fixture/test_failure_matrix.py`):
+- Every write is compare-and-set (status + `attempts` / `poll_seq` / `lease_owner` / `lease_until`).
+- Capture happens only in the transaction that wins `delivering → delivered`; release only on a winning
+  transition to `refunded`. A user never gets both the result and a refund.
+- Once results exist (`delivering`), deadlines no longer apply: delivery retries (max 8, backoff 5 s × 2ⁿ or
+  Telegram's `retry_after`) from our storage, skipping recorded steps. Refund only if nothing reached the user;
+  otherwise `delivered` with `error_code = partial_delivery`.
+- A submit overtaken by the sweeper cancels its orphaned provider job. Status/fetch hiccups keep retrying.
+
+Failure → user notice (refund included): moderation, invalid_input, provider_down, provider_busy, provider_error,
+timeout, no_model, delivery, budget.
+
+### Delivery (Telegram)
+
+`TelegramDelivery` (bot layer) implements the `DeliveryChannel` port: one photo ≤ 10 MB → `sendPhoto` (rejected
+dimensions → `sendDocument`); 2–10 same-kind files → albums of ≤ 10 (rejected → one by one) + caption; video
+≤ 50 MB → `sendVideo`; larger → signed storage link (24 h). Telegram errors: 403/blocked → unreachable (refund if
+nothing sent); 429/5xx/network/401/404/409 → retry; other 4xx → rejected.
+
+### Storage
+
+`STORAGE_BACKEND=local` (disk + `GET /media/{key}?exp&sig`, HMAC-signed, expiring, path-contained) or `s3`
+(R2/S3 presigned URLs). Inputs are given to providers as signed URLs; results are copied in before delivery.
+
 ## 4. Provider adapters (A1, A3)
 
 - Port `MediaProvider` (`domain/generation.py`): `submit`, `status`, `parse_webhook` (verifies signature, raises
@@ -217,6 +262,8 @@ when the webhook is registered.
 | PATCH | `/api/admin/catalog/{id}` | `X-API-Key` | edit `enabled, priority, credits, audio_credits, credits_override, unit_cost_usd, audio_unit_cost_usd, fallback_id, provider, provider_model_id, eta_s, notes`; setting credits pins them |
 | POST | `/api/admin/providers/{name}/enable\|disable` | `X-API-Key` | kill switch for every row of a provider |
 | POST | `/api/admin/catalog/reprice` | `X-API-Key` | recompute credits from costs (overrides kept) |
+| POST | `/webhook/provider/{name}` | adapter signature | provider completion events |
+| GET | `/media/{key}?exp&sig` | HMAC signature | signed media for providers / large results |
 
 ## 6. Logging (`app/logging_setup.py`)
 

@@ -74,6 +74,11 @@ All settings come from environment variables (or `.env`), see [app/config.py](..
 | `ENABLE_FAKE_PROVIDER` | `false` | Zero-spend FakeProvider for dev/CI. **Never true in production.** |
 | `FAKE_PROVIDER_DELAY_POLLS` | `2` | Status polls before a `fake/delayed` job completes. |
 | `CATALOG_SEED_PATH` | `""` | Alternative catalog YAML; default `app/infra/seed/catalog.yaml`. |
+| `JOB_IMAGE_TIMEOUT_S` / `JOB_VIDEO_TIMEOUT_S` | `180` / `900` | Hard deadline before auto-refund (submit + generation). |
+| `JOB_IMAGE_POLL_S` / `JOB_VIDEO_POLL_S` | `2` / `10` | Poll interval when no provider webhook arrives. |
+| `PUBLIC_BASE_URL` | `WEBHOOK_URL` | Base for provider webhooks and signed media links. |
+| `STORAGE_BACKEND` | `local` | `local` (disk, `STORAGE_DIR`) or `s3` (`S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`). With several hosts, use `s3` or a shared volume. |
+| `MEDIA_SIGNING_KEY` | `WEBHOOK_SECRET` | Set a dedicated value in production. |
 
 ### Operating the catalog
 
@@ -135,3 +140,4 @@ integration/e2e test starts from truncated tables and an empty Redis db.
 | `refactor/p0-layers-di` | (structure) | Layered architecture (domain / services / infra / bot+api) with dishka DI: typed handler dependencies, APP/REQUEST scopes, composition root, architecture test. Review fixes: secret checked before DI resolution, fail-fast startup, no update loss on partial Redis failure, graceful worker shutdown. |
 | `feat/a1-a3-provider-framework` | A1, A2, A3 | `MediaProvider` port + error taxonomy, provider registry, DB model catalog (seeded from YAML, admin-editable), tier → primary → fallback resolution, plan §5 pricing + margin floor, FakeProvider with 8 modes, provider contract suite, admin catalog API. |
 | `feat/m1-credit-ledger` | M1 | Append-only ledger (DB trigger), free/paid buckets, reserve → capture/release with account row locks, idempotent grants, clamped debits, FIFO free-credit expiry + daily cron, Credits screen and `/saldo`. Ledger scenarios are JSON fixtures run on both in-memory and Postgres repos. |
+| `feat/p0-jobs-pipeline` | Phase 0 exit, C3, F11 (auto-refund), A1 runtime | Job pipeline: create (quote + reserve), run with fallback chain, polling + provider webhooks, delivery outbox with recorded steps, lease-based sweeper, timeouts with refund, local/S3 storage with signed URLs, Telegram delivery. Reviewed twice by an independent agent; 13 findings fixed with regression tests. |
