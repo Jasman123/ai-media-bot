@@ -8,10 +8,10 @@ from dishka import AsyncContainer
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 
-from .api import system, webhook
+from .api import admin, system, webhook
 from .bot import register_commands
 from .config import Settings
-from .di import make_container, warm_up
+from .di import make_container, seed_reference_data, warm_up
 from .i18n import I18n
 from .infra.telegram import TelegramClient
 from .logging_setup import configure_logging
@@ -31,6 +31,7 @@ def create_app(container: AsyncContainer | None = None) -> FastAPI:
             configure_logging(settings.log_level, settings.log_json)
         # Fail fast: connect Postgres/Redis now rather than inside the first webhook call.
         await warm_up(di)
+        await seed_reference_data(di)
         if settings.webhook_url and settings.set_webhook_on_startup:
             telegram = await di.get(TelegramClient)
             await telegram.set_webhook(
@@ -49,6 +50,7 @@ def create_app(container: AsyncContainer | None = None) -> FastAPI:
     app = FastAPI(title="ai-media-bot", lifespan=lifespan)
     app.include_router(webhook.router)
     app.include_router(system.router)
+    app.include_router(admin.router)
     setup_dishka(di, app)
     return app
 

@@ -40,6 +40,8 @@ def make_settings(**overrides) -> Settings:
         api_key=API_KEY,
         database_url=TEST_DATABASE_URL,
         redis_url=TEST_REDIS_URL,
+        enable_fake_provider=True,
+        fake_provider_delay_polls=2,
     )
     base.update(overrides)
     return Settings(**base)
