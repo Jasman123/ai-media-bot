@@ -12,3 +12,7 @@ class QueueUnavailable(DomainError):
 
 class NotFound(DomainError):
     pass
+
+
+class NoModelAvailable(DomainError):
+    """No enabled model on a registered provider can serve this tier/operation right now."""

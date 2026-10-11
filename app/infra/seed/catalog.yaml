@@ -1,0 +1,115 @@
+# Model catalog seed (plan §6.1, A2). Inserted on startup when an id is missing; existing rows are never
+# overwritten, so admin edits (enable/disable, price overrides) survive deploys.
+#
+# credits: omit to compute from unit_cost_usd with the pricing policy (stars = ceil(cost × markup ÷ 0.013));
+#          set it to pin a manual price (credits_override).
+# priority: lower wins within a tier. fallback_id: tried when the primary fails with ProviderDown/QuotaExhausted.
+#
+# The `fake` provider only exists when ENABLE_FAKE_PROVIDER=true (dev, CI). Its unit costs mirror the real
+# tiers in plan §5 so prices in development match production.
+
+models:
+  # ------------------------------------------------------------------ images
+  - id: img-fast-fake
+    kind: image
+    tier: fast
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [text2img, img2img]
+    cost_model: per_image
+    unit_cost_usd: 0.005
+    aspect_ratios: ["1:1", "4:5", "9:16", "16:9"]
+    max_n: 4
+    eta_s: 5
+    priority: 900
+
+  - id: img-quality-fake
+    kind: image
+    tier: quality
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [text2img, img2img]
+    cost_model: per_image
+    unit_cost_usd: 0.08
+    aspect_ratios: ["1:1", "4:5", "9:16", "16:9"]
+    max_n: 4
+    eta_s: 15
+    priority: 900
+    fallback_id: img-fast-fake
+
+  - id: img-pro-fake
+    kind: image
+    tier: pro
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [text2img, img2img]
+    cost_model: per_image
+    unit_cost_usd: 0.15
+    aspect_ratios: ["1:1", "4:5", "9:16", "16:9"]
+    max_n: 2
+    eta_s: 25
+    priority: 900
+
+  # ------------------------------------------------------------------ video
+  - id: vid-hemat-fake
+    kind: video
+    tier: hemat
+    provider: fake
+    provider_model_id: fake/delayed
+    capabilities: [text2vid, img2vid, frames2vid, video_extend]
+    cost_model: per_second
+    unit_cost_usd: 0.03
+    audio_unit_cost_usd: 0.06
+    durations: [5, 10]
+    aspect_ratios: ["9:16", "16:9", "1:1"]
+    eta_s: 60
+    priority: 900
+
+  - id: vid-pro-fake
+    kind: video
+    tier: pro
+    provider: fake
+    provider_model_id: fake/delayed
+    capabilities: [text2vid, img2vid, frames2vid, video_extend]
+    cost_model: per_second
+    unit_cost_usd: 0.084
+    audio_unit_cost_usd: 0.126
+    durations: [5, 10]
+    aspect_ratios: ["9:16", "16:9", "1:1"]
+    eta_s: 120
+    priority: 900
+    fallback_id: vid-hemat-fake
+
+  # ------------------------------------------------------------------ tools
+  - id: tool-upscale-fake
+    kind: image
+    tier: tool
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [upscale]
+    cost_model: per_job
+    unit_cost_usd: 0.01
+    eta_s: 10
+    priority: 900
+
+  - id: tool-rmbg-fake
+    kind: image
+    tier: tool
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [remove_bg]
+    cost_model: per_job
+    unit_cost_usd: 0.005
+    eta_s: 5
+    priority: 900
+
+  - id: tool-restore-fake
+    kind: image
+    tier: tool
+    provider: fake
+    provider_model_id: fake/instant
+    capabilities: [restore]
+    cost_model: per_job
+    unit_cost_usd: 0.01
+    eta_s: 10
+    priority: 900

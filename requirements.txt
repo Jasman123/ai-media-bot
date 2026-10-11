@@ -32,3 +32,4 @@ redis==5.3.1
 hiredis==3.4.2
 tzdata==2026.5
 dishka==1.10.1
+pillow==12.3.0

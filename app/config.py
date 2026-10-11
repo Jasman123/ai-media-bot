@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
@@ -31,6 +32,17 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_json: bool = False
+
+    # Pricing (plan §5): stars = ceil(provider_cost_usd × markup ÷ stars_net_usd)
+    stars_net_usd: Decimal = Decimal("0.013")
+    markup: Decimal = Decimal("3")
+    min_margin: Decimal = Decimal("1.5")
+
+    # Providers
+    enable_fake_provider: bool = False   # dev/CI only: zero-spend FakeProvider (A3)
+    fake_provider_delay_polls: int = 2
+    fake_provider_webhook_secret: str = "fake-webhook-secret"  # noqa: S105 - dev-only fake, not a credential
+    catalog_seed_path: str = ""          # empty = app/infra/seed/catalog.yaml
 
 
 @lru_cache

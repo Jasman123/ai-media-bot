@@ -132,3 +132,34 @@ class RecordingTaskQueue:
             return False
         self.jobs.append({"task": task, "args": args, "queue": queue, "job_id": job_id, "defer_s": defer_s})
         return True
+
+
+class InMemoryCatalogRepository:
+    def __init__(self, models=()) -> None:
+        self.models = {m.id: m for m in models}
+
+    async def list_all(self):
+        return list(self.models.values())
+
+    async def get(self, model_id):
+        return self.models.get(model_id)
+
+    async def insert_missing(self, models) -> int:
+        added = 0
+        for model in models:
+            if model.id not in self.models:
+                self.models[model.id] = model
+                added += 1
+        return added
+
+    async def save(self, model):
+        self.models[model.id] = model
+        return model
+
+    async def set_provider_enabled(self, provider, enabled) -> int:
+        changed = 0
+        for model_id, model in list(self.models.items()):
+            if model.provider == provider:
+                self.models[model_id] = replace(model, enabled=enabled)
+                changed += 1
+        return changed

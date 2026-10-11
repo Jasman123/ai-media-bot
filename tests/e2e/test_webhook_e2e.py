@@ -25,10 +25,11 @@ async def test_wrong_or_missing_secret_is_rejected(stack):
     assert stack.tg.sent("sendMessage") == []
 
 
-async def test_startup_registers_webhook_with_payment_updates_and_no_drop():
+async def test_startup_registers_webhook_with_payment_updates_and_no_drop(engine, redis_pool, clean):
     fake = FakeTelegram()
     telegram = fake.client()
-    di = make_test_container(make_settings(webhook_url="https://bot.example.com/"), telegram, redis=object())
+    di = make_test_container(make_settings(webhook_url="https://bot.example.com/"), telegram, engine=engine,
+                             redis=redis_pool)
     app = create_app(di)
     async with app.router.lifespan_context(app):
         pass
