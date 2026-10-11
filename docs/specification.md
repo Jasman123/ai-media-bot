@@ -45,8 +45,8 @@ Rules of thumb:
 
 | Scope | Lifetime | Provides |
 |---|---|---|
-| `APP` | process | `Settings`, `AsyncEngine`, `async_sessionmaker`, `ArqRedis`, `TelegramClient`, `I18n`, `Clock`, `TaskQueue`, `WizardState`, `UpdateDeduper`, `UpdateIntake`, `Router`, `BotConfig` |
-| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `Dispatcher` |
+| `APP` | process | `Settings`, `AsyncEngine`, `async_sessionmaker`, `ArqRedis`, `TelegramClient`, `I18n`, `Clock`, `TaskQueue`, `WizardState`, `UpdateDeduper`, `UpdateIntake`, `ProviderRegistry` (+ adapters), `PricingPolicy`, `CatalogSeed`, `Router`, `BotConfig` |
+| `REQUEST` | one HTTP request or one ARQ job | `AsyncSession`, `UnitOfWork`, repositories, `UserService`, `CatalogService`, `Dispatcher` |
 
 - **Bot handlers** declare dependencies as typed parameters; the `Dispatcher` resolves them from the job's REQUEST
   container. All objects in one update share one DB session:
@@ -131,7 +131,48 @@ when the webhook is registered.
 |---|---|---|
 | `users` (`UserRow` → domain `User`) | `id`, `telegram_id` (unique), `kind` (`user`/`group`), `username?`, `language` (`id` default), `language_chosen`, `is_banned`, `ban_reason?`, `created_at`, `last_seen_at` | PDP-minimal: no names or phone numbers |
 
-## 4. Telegram client (`app/infra/telegram.py`)
+### 3.1 Model catalog (`model_catalog`, A2)
+
+| Column | Meaning |
+|---|---|
+| `id` | catalog key, e.g. `img-fast-fake` |
+| `kind`, `tier` | `image`/`video`; tier the user picks (`fast`, `quality`, `pro`, `hemat`, `tool`, …) |
+| `provider`, `provider_model_id` | registry name + vendor model id (fake: `fake/<mode>`) |
+| `capabilities` | operations served: `text2img img2img text2vid img2vid frames2vid video_extend upscale remove_bg restore` |
+| `cost_model`, `unit_cost_usd`, `audio_unit_cost_usd` | `per_image` / `per_megapixel` / `per_second` / `per_job` |
+| `credits`, `audio_credits`, `credits_override` | user price per unit; override = admin-pinned, repricing skips it |
+| `durations`, `aspect_ratios`, `resolutions`, `max_n`, `eta_s` | what the wizard may offer; ETA for status messages |
+| `priority`, `fallback_id`, `enabled`, `notes` | lower priority wins within a tier; fallback chain; kill switch |
+
+- **Seed**: `app/infra/seed/catalog.yaml`, inserted at startup for missing ids only (admin edits survive deploys).
+  Rows without `credits` are priced by the policy.
+- **Pricing** (`domain/catalog.py`): `credits = ceil(unit_cost × markup ÷ stars_net_usd)` per unit
+  (defaults 3× and $0.013). A request costs `credits × units` (n images, seconds, or 1 job). The price is
+  attached to the **tier's primary model**; a fallback may serve it only if
+  `credits × 0.013 ≥ min_margin (1.5) × fallback cost`.
+- **Resolution** (`CatalogService`): `tiers(op)` = primary (lowest priority) usable model per tier, cheapest tier
+  first; usable = enabled + provider registered + supports op. `chain(model_id, op)` follows `fallback_id`,
+  skipping unusable rows, cycle-safe.
+
+## 4. Provider adapters (A1, A3)
+
+- Port `MediaProvider` (`domain/generation.py`): `submit`, `status`, `parse_webhook` (verifies signature, raises
+  `InvalidInput` if bad), `cancel`, `fetch` (download result before URLs expire).
+- Normalised types: `GenerationRequest(operation, provider_model_id, prompt, input_urls, aspect_ratio,
+  duration_s, resolution, audio, n, seed, webhook_url)`, `ProviderStatus(state, queue_position, result, error)`.
+- Error taxonomy → core behaviour: `Retryable` (retry later) · `ProviderDown` (breaker + fallback) ·
+  `ModerationBlocked` (refund, plain message) · `InvalidInput` (refund, message) · `QuotaExhausted`
+  (alert, pause model, fallback).
+- `ProviderRegistry` is built in `app/di.py::ProviderAdapters`; only `app/infra/providers/*` know vendor details.
+- **FakeProvider** (`ENABLE_FAKE_PROVIDER=true`, dev/CI only): modes via `fake/<mode>` or a `[[mode]]` prompt
+  marker — `instant`, `delayed` (N polls), `fail`, `moderation`, `down`, `quota`, `invalid`, `retry`. Returns real
+  PNGs (sized by aspect ratio) and a stub MP4 as `data:` URLs; webhooks are HMAC-signed (`X-Fake-Signature`).
+- **Contract suite** `tests/support/provider_contract.py`: every adapter subclass must pass submit→poll→fetch,
+  failure and moderation normalisation, signed/failed/tampered webhooks, idempotent cancel.
+- **Adding a provider**: adapter module in `app/infra/providers/`, one line in `ProviderAdapters`, catalog rows,
+  a `Test<Vendor>Contract` subclass with recorded fixtures. No other file changes.
+
+## 4b. Telegram client (`app/infra/telegram.py`)
 
 - One shared `httpx.AsyncClient` per process, 60 s timeout, pooled connections (C4).
 - `call()` for JSON methods; `call_multipart()` for uploads (`InputFile`); dict/list params are JSON-encoded.
@@ -150,6 +191,10 @@ when the webhook is registered.
 | GET | `/api/health` | none | Liveness |
 | POST | `/api/send` | `X-API-Key` | Send a plain message |
 | GET | `/api/webhook-info` | `X-API-Key` | `getWebhookInfo` passthrough |
+| GET | `/api/admin/catalog` | `X-API-Key` | registered providers + all catalog rows |
+| PATCH | `/api/admin/catalog/{id}` | `X-API-Key` | edit `enabled, priority, credits, audio_credits, credits_override, unit_cost_usd, audio_unit_cost_usd, fallback_id, provider, provider_model_id, eta_s, notes`; setting credits pins them |
+| POST | `/api/admin/providers/{name}/enable\|disable` | `X-API-Key` | kill switch for every row of a provider |
+| POST | `/api/admin/catalog/reprice` | `X-API-Key` | recompute credits from costs (overrides kept) |
 
 ## 6. Logging (`app/logging_setup.py`)
 

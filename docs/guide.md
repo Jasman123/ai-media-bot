@@ -70,6 +70,21 @@ All settings come from environment variables (or `.env`), see [app/config.py](..
 | `REDIS_URL` | `redis://localhost:6379/0` | ARQ queues, wizard state, update dedupe. |
 | `DB_POOL_SIZE` | `10` | |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | JSON logs for production. `httpx` is pinned to WARNING (C7). |
+| `STARS_NET_USD` / `MARKUP` / `MIN_MARGIN` | `0.013` / `3` / `1.5` | Pricing policy (plan §5). Change, then `POST /api/admin/catalog/reprice`. |
+| `ENABLE_FAKE_PROVIDER` | `false` | Zero-spend FakeProvider for dev/CI. **Never true in production.** |
+| `FAKE_PROVIDER_DELAY_POLLS` | `2` | Status polls before a `fake/delayed` job completes. |
+| `CATALOG_SEED_PATH` | `""` | Alternative catalog YAML; default `app/infra/seed/catalog.yaml`. |
+
+### Operating the catalog
+
+```bash
+H="X-API-Key: $API_KEY"
+curl -H "$H" localhost:8000/api/admin/catalog                                   # what's offered
+curl -H "$H" -X PATCH localhost:8000/api/admin/catalog/img-quality-fake \
+     -H 'content-type: application/json' -d '{"enabled": false}'                # take a model out
+curl -H "$H" -X POST localhost:8000/api/admin/providers/fal/disable              # kill a whole provider
+curl -H "$H" -X POST localhost:8000/api/admin/catalog/reprice                    # after changing MARKUP
+```
 
 ## 5. Testing
 
@@ -118,3 +133,4 @@ integration/e2e test starts from truncated tables and an empty Redis db.
 | `feat/p0-foundation` | C1, C2, C4, C7, C8 | Shared Telegram client (multipart, keyboards-ready, errors without token), `pre_checkout_query` in allowed updates, no update dropping by default, token-redacting logs, app factory + DI container, four-layer test harness. |
 | `feat/p0-db-router-i18n` | C3, C5, C6, F15 | Postgres + Alembic, user model, ARQ `updates` queue behind the webhook (dedupe, 503 on queue failure), router (commands / callbacks / wizard states / media / payments), ID+EN catalogs with language picker, worker entrypoint, subprocess smoke tests. |
 | `refactor/p0-layers-di` | (structure) | Layered architecture (domain / services / infra / bot+api) with dishka DI: typed handler dependencies, APP/REQUEST scopes, composition root, architecture test. Review fixes: secret checked before DI resolution, fail-fast startup, no update loss on partial Redis failure, graceful worker shutdown. |
+| `feat/a1-a3-provider-framework` | A1, A2, A3 | `MediaProvider` port + error taxonomy, provider registry, DB model catalog (seeded from YAML, admin-editable), tier → primary → fallback resolution, plan §5 pricing + margin floor, FakeProvider with 8 modes, provider contract suite, admin catalog API. |
